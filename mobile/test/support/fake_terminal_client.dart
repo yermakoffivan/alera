@@ -49,7 +49,11 @@ class FakeTerminalClient
   final List<List<int>> writes = <List<int>>[];
   final List<({String tabId, int cols, int rows})> attachments =
       <({String tabId, int cols, int rows})>[];
+  final List<Object> writeErrors = <Object>[];
+  final List<Object> resizeErrors = <Object>[];
   Future<void>? attachCompletion;
+  Future<void>? removeTabCompletion;
+  Future<void>? terminateCompletion;
   List<int> attachmentSnapshot = const <int>[];
   List<WorkspaceTabSummary> tabs = <WorkspaceTabSummary>[];
   List<String> projectBranches = const <String>[];
@@ -261,12 +265,18 @@ class FakeTerminalClient
       'write $sessionId ${bytes.length} '
       'paste=$bracketedPaste enter=$deferredEnter',
     );
+    if (writeErrors.isNotEmpty) {
+      throw writeErrors.removeAt(0);
+    }
     writes.add(bytes);
   }
 
   @override
   Future<void> resizeTerminal(String sessionId, int cols, int rows) async {
     calls.add('resize $sessionId $cols $rows');
+    if (resizeErrors.isNotEmpty) {
+      throw resizeErrors.removeAt(0);
+    }
   }
 
   @override
@@ -277,6 +287,7 @@ class FakeTerminalClient
   @override
   Future<void> terminateSession(String sessionId) async {
     calls.add('terminate $sessionId');
+    await terminateCompletion;
   }
 
   @override
@@ -418,6 +429,7 @@ class FakeTerminalClient
   @override
   Future<void> removeTab(String tabId) async {
     calls.add('removeTab $tabId');
+    await removeTabCompletion;
     tabs = <WorkspaceTabSummary>[
       for (final tab in tabs)
         if (tab.id != tabId) tab,

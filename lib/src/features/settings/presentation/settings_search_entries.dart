@@ -192,6 +192,20 @@ const List<SettingsSearchEntry> agentsSearchEntries = <SettingsSearchEntry>[
     groupId: 'hooks',
   ),
   SettingsSearchEntry(
+    title: 'OpenCode 2 Hooks',
+    description: 'Install managed OpenCode 2 status plugin.',
+    keywords: <String>[
+      'opencode',
+      'opencode2',
+      'agent',
+      'status',
+      'hooks',
+      'plugin',
+      'v2',
+    ],
+    groupId: 'hooks',
+  ),
+  SettingsSearchEntry(
     title: 'Pi Hooks',
     description: 'Install managed Pi status extension.',
     keywords: <String>['pi', 'agent', 'status', 'hooks', 'extension'],
@@ -220,6 +234,7 @@ const List<SettingsSearchEntry> agentsSearchEntries = <SettingsSearchEntry>[
       'antigravity',
       'agy',
       'opencode',
+      'opencode2',
       'pi',
       'amp',
       'grok',
@@ -255,76 +270,6 @@ const List<SettingsSearchEntry> agentsSearchEntries = <SettingsSearchEntry>[
       'display',
     ],
     groupId: 'behavior',
-  ),
-];
-
-const List<SettingsSearchEntry> quotaSearchEntries = <SettingsSearchEntry>[
-  SettingsSearchEntry(
-    title: 'Provider Quotas',
-    description: 'Choose quota providers and their display order.',
-    keywords: <String>[
-      'quota',
-      'usage',
-      'codex',
-      'kimi',
-      'grok',
-      'antigravity',
-      'minimax',
-      'z.ai',
-      'order',
-      'pin',
-      'pinned',
-      'status bar',
-    ],
-    groupId: 'providers',
-  ),
-  SettingsSearchEntry(
-    title: 'Claude Code Quotas',
-    description: 'Enable Claude quotas for default and CCS accounts.',
-    keywords: <String>['claude', 'quota', 'usage'],
-    groupId: 'claude',
-  ),
-  SettingsSearchEntry(
-    title: 'Claude Default Quotas',
-    description: 'Configure the default Claude account independently.',
-    keywords: <String>['claude', 'default', 'account', 'quota'],
-    groupId: 'claude',
-  ),
-  SettingsSearchEntry(
-    title: 'Claude CCS Profiles',
-    description: 'Configure CCS alias and profile pairs for Claude quotas.',
-    keywords: <String>[
-      'claude',
-      'ccs',
-      'profile',
-      'alias',
-      'quota',
-      'pin',
-      'pinned',
-      'status bar',
-    ],
-    groupId: 'claude',
-  ),
-  SettingsSearchEntry(
-    title: 'Kimi API Key Variable',
-    description: 'Configure the Kimi API key environment variable name.',
-    keywords: <String>['kimi', 'environment', 'api key', 'KIMI_API_KEY'],
-    groupId: 'credentials',
-  ),
-  SettingsSearchEntry(
-    title: 'Quota Credential Environment',
-    description:
-        'Configure environment variable names for Kimi, Z.ai and MiniMax.',
-    keywords: <String>[
-      'environment',
-      'api key',
-      'kimi',
-      'z.ai',
-      'minimax',
-      'remote',
-      'host',
-    ],
-    groupId: 'credentials',
   ),
 ];
 
@@ -424,6 +369,7 @@ const List<SettingsSearchEntry> aiTextSearchEntries = <SettingsSearchEntry>[
       'antigravity',
       'agy',
       'opencode',
+      'opencode2',
       'pi',
       'amp',
       'custom',

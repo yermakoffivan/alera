@@ -34,7 +34,21 @@ List<CodexTimelineCell> _upsert(
   List<CodexTimelineCell> cells,
   CodexTimelineCell next,
 ) {
-  final index = cells.indexWhere((cell) => cell.id == next.id);
+  var index = cells.indexWhere((cell) => cell.id == next.id);
+  if (index < 0 && next.itemId != null && next.turnId != null) {
+    final provisionalIds = <String>{
+      '${next.kind.name}-${next.turnId}',
+      if (next.kind == CodexTimelineKind.assistantMessage ||
+          next.kind == CodexTimelineKind.progressText)
+        'assistant-${next.turnId}',
+    };
+    index = cells.indexWhere(
+      (cell) =>
+          provisionalIds.contains(cell.id) &&
+          cell.itemId == null &&
+          cell.kind == next.kind,
+    );
+  }
   if (index < 0) return <CodexTimelineCell>[...cells, next];
   final result = <CodexTimelineCell>[...cells];
   result[index] = CodexTimelineCell(
@@ -92,6 +106,17 @@ CodexTimelineKind _kindFor(String type, String method) {
   if (type.contains('plan') || method.contains('/plan')) {
     return CodexTimelineKind.plan;
   }
+  if (type.contains('websearch') ||
+      type.contains('dynamictool') ||
+      type.contains('imageview') ||
+      type.contains('imagegeneration') ||
+      type.contains('sleep') ||
+      type.contains('contextcompaction') ||
+      type.contains('enteredreview') ||
+      type.contains('exitedreview') ||
+      type.contains('extension')) {
+    return CodexTimelineKind.toolCall;
+  }
   if (type.contains('tool') ||
       method.contains('tool') ||
       method.contains('outputdelta')) {
@@ -105,9 +130,13 @@ String _titleFor(
   String method, {
   Map<String, Object?> item = const <String, Object?>{},
 }) {
+  if (type.contains('contextcompaction')) {
+    return method.contains('completed') ? 'Compacted' : 'Compacting';
+  }
   final explicit = _firstString(<Object?>[
     item['title'],
     item['name'],
+    item['tool'],
     item['command'],
   ]);
   if (explicit.isNotEmpty) return explicit;
@@ -122,9 +151,144 @@ String _titleFor(
     return 'Sub-agent';
   }
   if (method.contains('review')) return 'Review';
+  if (type.contains('websearch')) return 'Web search';
+  if (type.contains('imageview')) return 'Viewed image';
+  if (type.contains('imagegeneration')) return 'Generated image';
+  if (type.contains('enteredreview')) return 'Entered review mode';
+  if (type.contains('exitedreview')) return 'Exited review mode';
   if (type.contains('tool') || method.contains('tool')) return 'Tool call';
   return 'Codex activity';
 }
+
+String _contextCompactionTitle(CodexTimelineStatus status) => switch (status) {
+  CodexTimelineStatus.failed => 'Compaction failed',
+  CodexTimelineStatus.completed => 'Compacted',
+  _ => 'Compacting',
+};
+
+List<CodexTimelineCell> _updateTurnSeparator(
+  List<CodexTimelineCell> cells,
+  String turnId,
+  Map<String, Object?> params,
+  DateTime completedAt,
+) {
+  if (turnId.isEmpty) return cells;
+  final turn = _map(params['turn']);
+  final index = cells.indexWhere(
+    (cell) =>
+        cell.kind == CodexTimelineKind.turnSeparator && cell.turnId == turnId,
+  );
+  if (index < 0) return cells;
+  final separator = cells[index];
+  final explicitDuration = turn['durationMs'];
+  final duration = explicitDuration is num
+      ? explicitDuration.toInt()
+      : completedAt
+            .difference(separator.createdAt)
+            .inMilliseconds
+            .clamp(0, 1 << 53);
+  final next = <CodexTimelineCell>[...cells];
+  next[index] = separator.copyWith(
+    updatedAt: completedAt,
+    metadata: <String, Object?>{
+      ...separator.metadata,
+      'startedAt': turn['startedAt'] ?? separator.metadata['startedAt'],
+      'completedAt': turn['completedAt'],
+      'computedDurationMs': duration,
+    },
+  );
+  return next;
+}
+
+String _itemMarkdown(Map<String, Object?> item) {
+  final direct = _firstString(<Object?>[item['text'], item['message']]);
+  if (direct.isNotEmpty) return direct;
+  for (final key in <String>['summary', 'content', 'fragments']) {
+    final values = item[key];
+    if (values is! List) continue;
+    final parts = <String>[];
+    for (final value in values) {
+      if (value is String && value.isNotEmpty) {
+        parts.add(value);
+      } else if (value is Map) {
+        final text = value['text'];
+        if (text is String && text.isNotEmpty) parts.add(text);
+      }
+    }
+    if (parts.isNotEmpty) return parts.join('\n');
+  }
+  return _firstString(<Object?>[item['review']]);
+}
+
+String _itemDetails(Map<String, Object?> item) {
+  final source = _itemDetailsSource(item);
+  if (source == null) return '';
+  final value = item[source];
+  if (value is String) return value;
+  return '';
+}
+
+String? _itemDetailsSource(Map<String, Object?> item) {
+  for (final key in <String>[
+    'aggregatedOutput',
+    'output',
+    'result',
+    'error',
+    'diff',
+    'commandOutput',
+    'changes',
+    'contentItems',
+    'action',
+  ]) {
+    final value = item[key];
+    if (value == null) continue;
+    if (value is String) {
+      if (value.isNotEmpty) return key;
+    } else {
+      return key;
+    }
+  }
+  return null;
+}
+
+Map<String, Object?> _itemTimelineMetadata(Map<String, Object?> item) {
+  return <String, Object?>{
+    'itemType': item['type'],
+    'type': item['type'],
+    'query': item['query'],
+    'url': item['url'],
+    'action': item['action'],
+    'results': item['results'],
+    'changes': item['changes'],
+    'changesCount':
+        item['changesCount'] ??
+        (item['changes'] is List ? (item['changes'] as List).length : null),
+    'arguments': item['arguments'],
+    'result': item['result'],
+    'error': item['error'],
+    'contentItems': item['contentItems'],
+    'commandActions': item['commandActions'],
+    'durationMs': item['durationMs'],
+    'status': item['status'],
+    'server': item['server'],
+    'tool': item['tool'],
+    'namespace': item['namespace'],
+    'appContext': item['appContext'],
+    'pluginId': item['pluginId'],
+    'readOnlyHint': item['readOnlyHint'],
+    'success': item['success'],
+    'path': item['path'],
+    'revisedPrompt': item['revisedPrompt'],
+    'savedPath': item['savedPath'],
+    'aggregatedOutput': _nonStringItemDetail(item['aggregatedOutput']),
+    'output': _nonStringItemDetail(item['output']),
+    'diff': _nonStringItemDetail(item['diff']),
+    'commandOutput': _nonStringItemDetail(item['commandOutput']),
+    'detailsSource': ?_itemDetailsSource(item),
+  };
+}
+
+Object? _nonStringItemDetail(Object? value) => value is String ? null : value;
 
 Map<String, Object?> _map(Object? value) {
   if (value is Map<String, Object?>) return value;

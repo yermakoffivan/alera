@@ -147,6 +147,8 @@ class AgentQuotaProviderIdMapper extends EnumMapper<AgentQuotaProviderId> {
         return AgentQuotaProviderId.minimax;
       case r'zai':
         return AgentQuotaProviderId.zai;
+      case r'opencode':
+        return AgentQuotaProviderId.opencode;
       default:
         throw MapperException.unknownEnumValue(value);
     }
@@ -171,6 +173,8 @@ class AgentQuotaProviderIdMapper extends EnumMapper<AgentQuotaProviderId> {
         return r'minimax';
       case AgentQuotaProviderId.zai:
         return r'zai';
+      case AgentQuotaProviderId.opencode:
+        return r'opencode';
     }
   }
 }
@@ -904,6 +908,13 @@ class AgentStatusHookSettingsMapper
     opt: true,
     def: false,
   );
+  static bool _$opencode2(AgentStatusHookSettings v) => v.opencode2;
+  static const Field<AgentStatusHookSettings, bool> _f$opencode2 = Field(
+    'opencode2',
+    _$opencode2,
+    opt: true,
+    def: false,
+  );
   static bool _$pi(AgentStatusHookSettings v) => v.pi;
   static const Field<AgentStatusHookSettings, bool> _f$pi = Field(
     'pi',
@@ -934,6 +945,7 @@ class AgentStatusHookSettingsMapper
     #cursor: _f$cursor,
     #agy: _f$agy,
     #opencode: _f$opencode,
+    #opencode2: _f$opencode2,
     #pi: _f$pi,
     #amp: _f$amp,
     #grok: _f$grok,
@@ -947,6 +959,7 @@ class AgentStatusHookSettingsMapper
       cursor: data.dec(_f$cursor),
       agy: data.dec(_f$agy),
       opencode: data.dec(_f$opencode),
+      opencode2: data.dec(_f$opencode2),
       pi: data.dec(_f$pi),
       amp: data.dec(_f$amp),
       grok: data.dec(_f$grok),
@@ -1030,6 +1043,7 @@ abstract class AgentStatusHookSettingsCopyWith<
     bool? cursor,
     bool? agy,
     bool? opencode,
+    bool? opencode2,
     bool? pi,
     bool? amp,
     bool? grok,
@@ -1056,6 +1070,7 @@ class _AgentStatusHookSettingsCopyWithImpl<$R, $Out>
     bool? cursor,
     bool? agy,
     bool? opencode,
+    bool? opencode2,
     bool? pi,
     bool? amp,
     bool? grok,
@@ -1067,6 +1082,7 @@ class _AgentStatusHookSettingsCopyWithImpl<$R, $Out>
       if (cursor != null) #cursor: cursor,
       if (agy != null) #agy: agy,
       if (opencode != null) #opencode: opencode,
+      if (opencode2 != null) #opencode2: opencode2,
       if (pi != null) #pi: pi,
       if (amp != null) #amp: amp,
       if (grok != null) #grok: grok,
@@ -1080,6 +1096,7 @@ class _AgentStatusHookSettingsCopyWithImpl<$R, $Out>
     cursor: data.get(#cursor, or: $value.cursor),
     agy: data.get(#agy, or: $value.agy),
     opencode: data.get(#opencode, or: $value.opencode),
+    opencode2: data.get(#opencode2, or: $value.opencode2),
     pi: data.get(#pi, or: $value.pi),
     amp: data.get(#amp, or: $value.amp),
     grok: data.get(#grok, or: $value.grok),
@@ -1886,6 +1903,15 @@ class AgentQuotaHostSettingsMapper
         opt: true,
         def: true,
       );
+  static bool _$claudeDefaultShowInUsage(AgentQuotaHostSettings v) =>
+      v.claudeDefaultShowInUsage;
+  static const Field<AgentQuotaHostSettings, bool> _f$claudeDefaultShowInUsage =
+      Field(
+        'claudeDefaultShowInUsage',
+        _$claudeDefaultShowInUsage,
+        opt: true,
+        def: true,
+      );
   static List<ClaudeQuotaProfileSettings> _$claudeProfiles(
     AgentQuotaHostSettings v,
   ) => v.claudeProfiles;
@@ -1929,6 +1955,7 @@ class AgentQuotaHostSettingsMapper
   final MappableFields<AgentQuotaHostSettings> fields = const {
     #enabledProviders: _f$enabledProviders,
     #claudeDefaultEnabled: _f$claudeDefaultEnabled,
+    #claudeDefaultShowInUsage: _f$claudeDefaultShowInUsage,
     #claudeProfiles: _f$claudeProfiles,
     #selectedClaudeProfile: _f$selectedClaudeProfile,
     #environment: _f$environment,
@@ -1939,6 +1966,7 @@ class AgentQuotaHostSettingsMapper
     return AgentQuotaHostSettings(
       enabledProviders: data.dec(_f$enabledProviders),
       claudeDefaultEnabled: data.dec(_f$claudeDefaultEnabled),
+      claudeDefaultShowInUsage: data.dec(_f$claudeDefaultShowInUsage),
       claudeProfiles: data.dec(_f$claudeProfiles),
       selectedClaudeProfile: data.dec(_f$selectedClaudeProfile),
       environment: data.dec(_f$environment),
@@ -2043,6 +2071,7 @@ abstract class AgentQuotaHostSettingsCopyWith<
   $R call({
     List<AgentQuotaProviderId>? enabledProviders,
     bool? claudeDefaultEnabled,
+    bool? claudeDefaultShowInUsage,
     List<ClaudeQuotaProfileSettings>? claudeProfiles,
     String? selectedClaudeProfile,
     AgentQuotaEnvironmentSettings? environment,
@@ -2107,6 +2136,7 @@ class _AgentQuotaHostSettingsCopyWithImpl<$R, $Out>
   $R call({
     List<AgentQuotaProviderId>? enabledProviders,
     bool? claudeDefaultEnabled,
+    bool? claudeDefaultShowInUsage,
     List<ClaudeQuotaProfileSettings>? claudeProfiles,
     String? selectedClaudeProfile,
     AgentQuotaEnvironmentSettings? environment,
@@ -2116,6 +2146,8 @@ class _AgentQuotaHostSettingsCopyWithImpl<$R, $Out>
       if (enabledProviders != null) #enabledProviders: enabledProviders,
       if (claudeDefaultEnabled != null)
         #claudeDefaultEnabled: claudeDefaultEnabled,
+      if (claudeDefaultShowInUsage != null)
+        #claudeDefaultShowInUsage: claudeDefaultShowInUsage,
       if (claudeProfiles != null) #claudeProfiles: claudeProfiles,
       if (selectedClaudeProfile != null)
         #selectedClaudeProfile: selectedClaudeProfile,
@@ -2129,6 +2161,10 @@ class _AgentQuotaHostSettingsCopyWithImpl<$R, $Out>
     claudeDefaultEnabled: data.get(
       #claudeDefaultEnabled,
       or: $value.claudeDefaultEnabled,
+    ),
+    claudeDefaultShowInUsage: data.get(
+      #claudeDefaultShowInUsage,
+      or: $value.claudeDefaultShowInUsage,
     ),
     claudeProfiles: data.get(#claudeProfiles, or: $value.claudeProfiles),
     selectedClaudeProfile: data.get(
@@ -2175,17 +2211,32 @@ class ClaudeQuotaProfileSettingsMapper
     'profile',
     _$profile,
   );
+  static bool _$showInUsage(ClaudeQuotaProfileSettings v) => v.showInUsage;
+  static const Field<ClaudeQuotaProfileSettings, bool> _f$showInUsage = Field(
+    'showInUsage',
+    _$showInUsage,
+    opt: true,
+    def: true,
+  );
+  static String? _$usageDisplayName(ClaudeQuotaProfileSettings v) =>
+      v.usageDisplayName;
+  static const Field<ClaudeQuotaProfileSettings, String> _f$usageDisplayName =
+      Field('usageDisplayName', _$usageDisplayName, opt: true);
 
   @override
   final MappableFields<ClaudeQuotaProfileSettings> fields = const {
     #alias: _f$alias,
     #profile: _f$profile,
+    #showInUsage: _f$showInUsage,
+    #usageDisplayName: _f$usageDisplayName,
   };
 
   static ClaudeQuotaProfileSettings _instantiate(DecodingData data) {
     return ClaudeQuotaProfileSettings(
       alias: data.dec(_f$alias),
       profile: data.dec(_f$profile),
+      showInUsage: data.dec(_f$showInUsage),
+      usageDisplayName: data.dec(_f$usageDisplayName),
     );
   }
 
@@ -2263,7 +2314,12 @@ abstract class ClaudeQuotaProfileSettingsCopyWith<
   $Out
 >
     implements ClassCopyWith<$R, $In, $Out> {
-  $R call({String? alias, String? profile});
+  $R call({
+    String? alias,
+    String? profile,
+    bool? showInUsage,
+    String? usageDisplayName,
+  });
   ClaudeQuotaProfileSettingsCopyWith<$R2, $In, $Out2> $chain<$R2, $Out2>(
     Then<$Out2, $R2> t,
   );
@@ -2283,10 +2339,17 @@ class _ClaudeQuotaProfileSettingsCopyWithImpl<$R, $Out>
   late final ClassMapperBase<ClaudeQuotaProfileSettings> $mapper =
       ClaudeQuotaProfileSettingsMapper.ensureInitialized();
   @override
-  $R call({String? alias, String? profile}) => $apply(
+  $R call({
+    String? alias,
+    String? profile,
+    bool? showInUsage,
+    Object? usageDisplayName = $none,
+  }) => $apply(
     FieldCopyWithData({
       if (alias != null) #alias: alias,
       if (profile != null) #profile: profile,
+      if (showInUsage != null) #showInUsage: showInUsage,
+      if (usageDisplayName != $none) #usageDisplayName: usageDisplayName,
     }),
   );
   @override
@@ -2294,6 +2357,11 @@ class _ClaudeQuotaProfileSettingsCopyWithImpl<$R, $Out>
       ClaudeQuotaProfileSettings(
         alias: data.get(#alias, or: $value.alias),
         profile: data.get(#profile, or: $value.profile),
+        showInUsage: data.get(#showInUsage, or: $value.showInUsage),
+        usageDisplayName: data.get(
+          #usageDisplayName,
+          or: $value.usageDisplayName,
+        ),
       );
 
   @override
@@ -2854,6 +2922,7 @@ class AleraSettingsMapper extends ClassMapperBase<AleraSettings> {
       GeneralSettingsMapper.ensureInitialized();
       AgentSettingsMapper.ensureInitialized();
       AiTextGenerationSettingsMapper.ensureInitialized();
+      AiDictationSettingsMapper.ensureInitialized();
       TextActionsSettingsMapper.ensureInitialized();
       EditorSettingsMapper.ensureInitialized();
       DiagnosticsSettingsMapper.ensureInitialized();
@@ -2887,6 +2956,13 @@ class AleraSettingsMapper extends ClassMapperBase<AleraSettings> {
     _$aiTextGeneration,
     opt: true,
     def: AiTextGenerationSettings.defaults,
+  );
+  static AiDictationSettings _$aiDictation(AleraSettings v) => v.aiDictation;
+  static const Field<AleraSettings, AiDictationSettings> _f$aiDictation = Field(
+    'aiDictation',
+    _$aiDictation,
+    opt: true,
+    def: AiDictationSettings.defaults,
   );
   static TextActionsSettings _$textActions(AleraSettings v) => v.textActions;
   static const Field<AleraSettings, TextActionsSettings> _f$textActions = Field(
@@ -2930,6 +3006,7 @@ class AleraSettingsMapper extends ClassMapperBase<AleraSettings> {
     #general: _f$general,
     #agents: _f$agents,
     #aiTextGeneration: _f$aiTextGeneration,
+    #aiDictation: _f$aiDictation,
     #textActions: _f$textActions,
     #editor: _f$editor,
     #diagnostics: _f$diagnostics,
@@ -2945,6 +3022,7 @@ class AleraSettingsMapper extends ClassMapperBase<AleraSettings> {
       general: data.dec(_f$general),
       agents: data.dec(_f$agents),
       aiTextGeneration: data.dec(_f$aiTextGeneration),
+      aiDictation: data.dec(_f$aiDictation),
       textActions: data.dec(_f$textActions),
       editor: data.dec(_f$editor),
       diagnostics: data.dec(_f$diagnostics),
@@ -3024,6 +3102,8 @@ abstract class AleraSettingsCopyWith<$R, $In extends AleraSettings, $Out>
     AiTextGenerationSettings
   >
   get aiTextGeneration;
+  AiDictationSettingsCopyWith<$R, AiDictationSettings, AiDictationSettings>
+  get aiDictation;
   TextActionsSettingsCopyWith<$R, TextActionsSettings, TextActionsSettings>
   get textActions;
   EditorSettingsCopyWith<$R, EditorSettings, EditorSettings> get editor;
@@ -3042,6 +3122,7 @@ abstract class AleraSettingsCopyWith<$R, $In extends AleraSettings, $Out>
     GeneralSettings? general,
     AgentSettings? agents,
     AiTextGenerationSettings? aiTextGeneration,
+    AiDictationSettings? aiDictation,
     TextActionsSettings? textActions,
     EditorSettings? editor,
     DiagnosticsSettings? diagnostics,
@@ -3075,6 +3156,10 @@ class _AleraSettingsCopyWithImpl<$R, $Out>
   get aiTextGeneration =>
       $value.aiTextGeneration.copyWith.$chain((v) => call(aiTextGeneration: v));
   @override
+  AiDictationSettingsCopyWith<$R, AiDictationSettings, AiDictationSettings>
+  get aiDictation =>
+      $value.aiDictation.copyWith.$chain((v) => call(aiDictation: v));
+  @override
   TextActionsSettingsCopyWith<$R, TextActionsSettings, TextActionsSettings>
   get textActions =>
       $value.textActions.copyWith.$chain((v) => call(textActions: v));
@@ -3103,6 +3188,7 @@ class _AleraSettingsCopyWithImpl<$R, $Out>
     GeneralSettings? general,
     AgentSettings? agents,
     AiTextGenerationSettings? aiTextGeneration,
+    AiDictationSettings? aiDictation,
     TextActionsSettings? textActions,
     EditorSettings? editor,
     DiagnosticsSettings? diagnostics,
@@ -3114,6 +3200,7 @@ class _AleraSettingsCopyWithImpl<$R, $Out>
       if (general != null) #general: general,
       if (agents != null) #agents: agents,
       if (aiTextGeneration != null) #aiTextGeneration: aiTextGeneration,
+      if (aiDictation != null) #aiDictation: aiDictation,
       if (textActions != null) #textActions: textActions,
       if (editor != null) #editor: editor,
       if (diagnostics != null) #diagnostics: diagnostics,
@@ -3127,6 +3214,7 @@ class _AleraSettingsCopyWithImpl<$R, $Out>
     general: data.get(#general, or: $value.general),
     agents: data.get(#agents, or: $value.agents),
     aiTextGeneration: data.get(#aiTextGeneration, or: $value.aiTextGeneration),
+    aiDictation: data.get(#aiDictation, or: $value.aiDictation),
     textActions: data.get(#textActions, or: $value.textActions),
     editor: data.get(#editor, or: $value.editor),
     diagnostics: data.get(#diagnostics, or: $value.diagnostics),

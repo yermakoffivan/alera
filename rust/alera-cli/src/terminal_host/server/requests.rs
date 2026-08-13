@@ -54,6 +54,7 @@ impl ServerActor {
     /// response target.
     pub(super) async fn handle_line(&mut self, client_id: u64, line: String) {
         let mut restart_after_response = false;
+        let mut shutdown_after_response = false;
         let decoded: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             // jsonDecode threw: no request id is available, so drop the client.
@@ -70,6 +71,7 @@ impl ServerActor {
         let outcome: HostResult<Value> = match extract_request(obj) {
             Ok((request_type, payload)) => {
                 restart_after_response = request_type == "host.restart";
+                shutdown_after_response = request_type == "host.shutdown";
                 if let Some(id) = request_id {
                     if self.emulator_requests.has_runtime_mutations()
                         && conflicts_with_runtime_mutation(&request_type)
@@ -146,6 +148,14 @@ impl ServerActor {
                     if restart_after_response {
                         self.restart_runtime_after_client_write(client_id);
                     }
+                    if shutdown_after_response {
+                        self.shutdown_runtime_after_client_write(client_id);
+                    }
+                } else if shutdown_after_response {
+                    // There is no response to order against for a malformed
+                    // request without an id, so preserve the legacy shutdown
+                    // behavior for that case.
+                    let _ = self.inbox.send(ServerCommand::RequestedShutdown);
                 }
             }
             Err(error) => {
@@ -248,6 +258,7 @@ impl ServerActor {
                 self.handle_codex_request(client_id, request_type, payload)
                     .await
             }
+            "mobile.workspaceQuickOpen.stop" => self.stop_mobile_workspace_quick_open(payload),
             "configure" => {
                 self.require_auth(client_id)?;
                 // Crash reporting is a live switch rather than a start-up flag:
@@ -297,7 +308,6 @@ impl ServerActor {
                         return Err(HostError::state(message));
                     }
                 }
-                let _ = self.inbox.send(ServerCommand::RequestedShutdown);
                 Ok(json!({
                     "stopped": true,
                     "forced": force,
@@ -416,13 +426,18 @@ impl ServerActor {
                         "terminal.reclaim is only available to desktop clients.",
                     ));
                 }
-                let session_id = self.require_session(payload)?;
+                let session_id = self.require_session_id(payload)?;
                 let restored = self.reclaim_terminal_for_desktop(&session_id);
                 Ok(json!({ "restored": restored }))
             }
             "terminal.driver.list" => {
                 self.require_auth(client_id)?;
                 Ok(self.terminal_driver_list_payload())
+            }
+            "terminal.pulse.status" => {
+                self.require_auth(client_id)?;
+                self.require_request_allowed(client_id, "terminal.pulse.status")?;
+                self.terminal_pulse_status(payload).await
             }
             "setOutputPaused" => {
                 self.require_auth(client_id)?;
@@ -502,8 +517,12 @@ impl ServerActor {
             }
             "shellEnvironment.reload" => {
                 self.require_auth(client_id)?;
-                let path_count = crate::login_shell_environment::reload_login_shell_path().await;
-                Ok(json!({ "pathEntryCount": path_count }))
+                let (path_count, variable_count) =
+                    crate::login_shell_environment::reload_login_shell_environment().await;
+                Ok(json!({
+                    "pathEntryCount": path_count,
+                    "variableCount": variable_count,
+                }))
             }
             _ if request_type.starts_with("computer.") => {
                 self.require_auth(client_id)?;
@@ -744,12 +763,15 @@ impl ServerActor {
                 self.require_auth(client_id)?;
                 let id = require_string_key(payload, "id")?;
                 let title = require_string_key(payload, "title")?;
-                let value =
-                    json_result(self.runtime_store.rename_workspace_tab(&id, &title).await)?;
-                self.broadcast_workspace_tabs_changed(
-                    value.get("workspaceId").and_then(Value::as_str),
-                );
-                Ok(value)
+                let tab = self
+                    .runtime_store
+                    .rename_workspace_tab(&id, &title)
+                    .await
+                    .map_err(|error| HostError::state(error.to_string()))?;
+                let workspace_id = tab.workspace_id.clone();
+                let tab = self.workspace_tab_for_client(client_id, tab);
+                self.broadcast_workspace_tabs_changed(Some(&workspace_id));
+                Ok(json!(tab))
             }
             "linkedReview.find" => {
                 self.require_auth(client_id)?;
@@ -926,6 +948,16 @@ impl ServerActor {
                 self.require_auth(client_id)?;
                 self.require_request_allowed(client_id, request_type)?;
                 self.cancel_ai_text_generation(payload)
+            }
+            "aiDictation.transcribe" | "mobile.aiDictation.transcribe" => {
+                self.require_auth(client_id)?;
+                self.require_request_allowed(client_id, request_type)?;
+                super::ai_dictation_requests::transcribe(payload).await
+            }
+            "aiDictation.cancel" | "mobile.aiDictation.cancel" => {
+                self.require_auth(client_id)?;
+                self.require_request_allowed(client_id, request_type)?;
+                super::ai_dictation_requests::cancel(payload)
             }
             "agentProfile.upsert" => {
                 self.require_auth(client_id)?;
@@ -1232,6 +1264,10 @@ fn host_shutdown_busy_message(
         usize::from(has_push_subscriptions)
     ))
 }
+
+#[cfg(test)]
+#[path = "requests/access_cases.rs"]
+mod access_cases;
 
 #[cfg(test)]
 mod tests;

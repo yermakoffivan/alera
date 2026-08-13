@@ -6,7 +6,9 @@ import 'package:alera_mobile/src/core/mobile_protocol.dart';
 import 'package:alera_mobile/src/features/hosts/domain/paired_device_credentials.dart';
 import 'package:alera_mobile/src/features/runtime/infra/mobile_binary_output_payload.dart';
 import 'package:alera_mobile/src/features/hosts/domain/pairing_offer.dart';
+import 'package:alera_mobile/src/features/runtime/domain/host_reachability.dart';
 import 'package:alera_mobile/src/features/runtime/domain/mobile_runtime_status.dart';
+import 'package:alera_mobile/src/features/runtime/domain/mobile_codex_workspace.dart';
 import 'package:alera_mobile/src/features/runtime/domain/runtime_restart_result.dart';
 import 'package:alera_mobile/src/features/runtime/domain/workspace_tab_summary.dart';
 import 'package:alera_mobile/src/features/settings/domain/portable_host_settings.dart';
@@ -25,6 +27,7 @@ part 'mobile_runtime_client_host_tools.dart';
 part 'mobile_runtime_terminal_requests.dart';
 part 'mobile_terminal_output_resync.dart';
 part 'mobile_runtime_codex_requests.dart';
+part 'mobile_runtime_codex_workspace_requests.dart';
 
 const Duration _defaultRequestTimeout = Duration(seconds: 20);
 
@@ -36,8 +39,13 @@ class MobileRuntimeClient
         MobileRuntimeClientHostTools,
         MobileRuntimeTerminalRequests,
         MobileRuntimeTerminalOutputResync,
-        MobileRuntimeCodexRequests
-    implements MobileTerminalClient, MobileWorkspaceClient, MobileCodexClient {
+        MobileRuntimeCodexRequests,
+        MobileRuntimeCodexWorkspaceRequests
+    implements
+        MobileTerminalClient,
+        MobileWorkspaceClient,
+        MobileCodexClient,
+        MobileCodexWorkspaceClient {
   MobileRuntimeClient._(
     this._channel, {
     this._requestTimeout = _defaultRequestTimeout,
@@ -61,9 +69,14 @@ class MobileRuntimeClient
     try {
       await client._channel.ready.timeout(client._requestTimeout);
       return client;
-    } on Object {
+    } on Object catch (error, stackTrace) {
       await client.dispose();
-      rethrow;
+      // Convert only transport reachability at this boundary. Authentication
+      // and protocol errors happen later and retain their original types.
+      Error.throwWithStackTrace(
+        normalizeHostConnectionError(error),
+        stackTrace,
+      );
     }
   }
 
@@ -164,9 +177,38 @@ class MobileRuntimeClient
   @override
   bool get supportsCodexChat =>
       _runtimeCapabilities.contains(codexChatTabCapability);
+  @override
+  bool get supportsCodexGoals =>
+      _runtimeCapabilities.contains(codexGoalsCapability);
+  @override
+  bool get supportsCodexSessions =>
+      _runtimeCapabilities.contains(mobileCodexSessionsCapability);
+  @override
+  bool get supportsCodexTurnPolicy =>
+      _runtimeCapabilities.contains(codexTurnPolicyCapability);
 
   bool get supportsAutomations =>
       _runtimeCapabilities.contains(automationsCapability);
+  bool get supportsAiDictation =>
+      _runtimeCapabilities.contains(aiDictationCapability);
+
+  Future<Map<String, Object?>> transcribeMobileAudio({
+    required List<int> audio,
+    String? modelPath,
+    String? language,
+    String? initialPrompt,
+  }) {
+    if (!supportsAiDictation) {
+      throw UnsupportedError('Update the runtime to add host AI Dictation.');
+    }
+    return requestMap('mobile.aiDictation.transcribe', <String, Object?>{
+      'requestId': 'mobile-dictation-${DateTime.now().microsecondsSinceEpoch}',
+      'audioBase64': base64Encode(audio),
+      'modelPath': modelPath,
+      'language': language,
+      'initialPrompt': initialPrompt,
+    });
+  }
 
   Future<Map<String, Object?>> authenticate({
     required String deviceId,
@@ -378,16 +420,17 @@ class MobileRuntimeClient
   void _handleSocketError(Object error, [StackTrace? stackTrace]) {
     // The single funnel every transport failure passes through, and the most
     // common thing a user reports about this app.
+    final normalized = normalizeHostConnectionError(error);
     Logger('MobileRuntimeClient').warning(
       'runtime connection failed with ${_pending.length} pending requests',
       error,
       stackTrace,
     );
-    _closedError ??= error;
+    _closedError ??= normalized;
     _closedStackTrace ??= stackTrace;
     for (final completer in _pending.values) {
       if (!completer.isCompleted) {
-        completer.completeError(error, stackTrace);
+        completer.completeError(normalized, stackTrace);
       }
     }
     _pending.clear();
@@ -400,6 +443,8 @@ class MobileRuntimeClient
   }
 
   void _handleSocketClosed() {
-    _handleSocketError(StateError('Mobile runtime connection closed.'));
+    // Expected end of a live socket: surface as recoverable connection loss
+    // rather than a StateError that would look like a programming fault.
+    _handleSocketError(const RuntimeConnectionLost());
   }
 }

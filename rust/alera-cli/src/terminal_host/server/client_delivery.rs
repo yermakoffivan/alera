@@ -26,11 +26,16 @@ impl ServerActor {
         self.require_request_allowed(client_id, request_type)
     }
 
-    pub(super) fn require_session(&self, payload: &Value) -> HostResult<String> {
+    pub(super) fn require_session_id(&self, payload: &Value) -> HostResult<String> {
         let session_id = match payload.get("sessionId") {
             Some(Value::String(value)) => value.clone(),
             _ => return Err(HostError::format("Terminal session id is required.")),
         };
+        Ok(session_id)
+    }
+
+    pub(super) fn require_session(&self, payload: &Value) -> HostResult<String> {
+        let session_id = self.require_session_id(payload)?;
         if !self.sessions.contains_key(&session_id) {
             return Err(HostError::state(format!(
                 "Terminal session is not attached: {session_id}"
@@ -107,11 +112,18 @@ impl ServerActor {
     }
 
     pub(super) fn client_write(&self, client_id: u64, message: Value) {
+        self.try_client_write(client_id, message);
+    }
+
+    pub(super) fn try_client_write(&self, client_id: u64, message: Value) -> bool {
         if let Some(client) = self.clients.get(&client_id) {
             if client.handle.send_control(message.into()).is_err() {
                 self.disconnect_client_soon(client_id);
+                return false;
             }
+            return true;
         }
+        false
     }
 
     pub(super) fn restart_runtime_after_client_write(&self, client_id: u64) {
@@ -119,6 +131,20 @@ impl ServerActor {
             if client
                 .handle
                 .send_control(ClientFrame::RestartRuntimeAfterWrite {
+                    inbox: self.inbox.clone(),
+                })
+                .is_err()
+            {
+                self.disconnect_client_soon(client_id);
+            }
+        }
+    }
+
+    pub(super) fn shutdown_runtime_after_client_write(&self, client_id: u64) {
+        if let Some(client) = self.clients.get(&client_id) {
+            if client
+                .handle
+                .send_control(ClientFrame::ShutdownRuntimeAfterWrite {
                     inbox: self.inbox.clone(),
                 })
                 .is_err()
@@ -141,6 +167,17 @@ impl ServerActor {
     pub(super) fn broadcast_authenticated(&self, message: Value) {
         for (client_id, client) in &self.clients {
             if client.authenticated && client.handle.send_control(message.clone().into()).is_err() {
+                self.disconnect_client_soon(*client_id);
+            }
+        }
+    }
+
+    pub(super) fn broadcast_authenticated_local(&self, message: Value) {
+        for (client_id, client) in &self.clients {
+            if client.authenticated
+                && client.kind == ClientKind::Local
+                && client.handle.send_control(message.clone().into()).is_err()
+            {
                 self.disconnect_client_soon(*client_id);
             }
         }
@@ -172,6 +209,7 @@ impl ServerActor {
         self.handle_browser_client_disconnect(client_id);
         self.cancel_queued_emulator_requests(client_id);
         self.release_mobile_driver_for_client(client_id);
+        self.cancel_mobile_prompt_file_uploads(client_id);
         let session_ids: Vec<String> = self.sessions.keys().cloned().collect();
         for session_id in session_ids {
             self.flush_all_output(&session_id);
@@ -293,6 +331,7 @@ mod tests {
                     cloud_device_id: None,
                 },
             )]),
+            mobile_prompt_file_uploads: HashMap::new(),
             pending_output_writes: HashMap::new(),
             agent_presence: AgentPresenceRegistry::default(),
             orchestration_waiters: MessageWaiterRegistry::default(),
@@ -301,6 +340,7 @@ mod tests {
             orchestration_activity_last_recorded: HashMap::new(),
             coordinators: HashMap::new(),
             resources: ResourceMonitorState::default(),
+            terminal_pulses: Default::default(),
             browser: BrowserBroker::default(),
             emulators: None,
             codex: None,

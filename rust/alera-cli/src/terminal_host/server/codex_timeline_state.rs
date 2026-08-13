@@ -8,6 +8,8 @@ use super::{
         append_delta, cell_by_id, first_delta, first_string, is_agent_delta, is_output_delta,
         is_reasoning_delta, kind_for, new_cell, title_for, upsert_cell,
     },
+    codex_timeline_content::{item_details, item_markdown, update_turn_separator_metrics},
+    codex_timeline_tool_metadata::item_timeline_metadata,
     trim_cells, turn_id_from_message,
 };
 
@@ -26,7 +28,11 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
     let method = match raw_method {
         "codex/event/item_started" => "item/started",
         "codex/event/item_completed" => "item/completed",
+        "codex/event/task_started" => "turn/started",
         "codex/event/task_complete" => "turn/completed",
+        "codex/event/task_failed" => "turn/failed",
+        "codex/event/turn_aborted" => "turn/aborted",
+        "codex/event/turn_interrupted" => "turn/interrupted",
         "codex/event/token_count" => "token_count",
         other => other,
     };
@@ -50,6 +56,17 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
     let item_type = first_string(&[item.get("type"), params.get("type")]).to_lowercase();
     let lower = method.to_lowercase();
     let now = Utc::now().to_rfc3339();
+
+    if super::codex_timeline_modern::reduce_modern_notification(
+        &mut cells, method, &params, &turn_id, &item_id, &now,
+    ) {
+        if method == "item/fileChange/patchUpdated" {
+            super::codex_diff_coverage::mark_superseded_aggregate_diff(&mut cells, &turn_id);
+        }
+        trim_cells(&mut cells);
+        object.insert("timelineCells".to_string(), Value::Array(cells));
+        return;
+    }
 
     if raw_method == "codex/event/task_complete" {
         let text = first_string(&[
@@ -76,16 +93,21 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
         }
         for cell in &mut cells {
             if cell.get("turnId").and_then(Value::as_str) == Some(turn_id.as_str())
-                && cell.get("isStreaming").and_then(Value::as_bool) == Some(true)
+                && (cell.get("kind").and_then(Value::as_str) == Some("turnSeparator")
+                    || cell.get("isStreaming").and_then(Value::as_bool) == Some(true))
             {
                 if let Some(map) = cell.as_object_mut() {
                     map.insert("status".to_string(), Value::String("completed".to_string()));
-                    map.insert("isStreaming".to_string(), Value::Bool(false));
+                    if map.get("isStreaming").and_then(Value::as_bool) == Some(true) {
+                        map.insert("isStreaming".to_string(), Value::Bool(false));
+                    }
                     map.insert("updatedAt".to_string(), Value::String(now.clone()));
                 }
             }
         }
+        update_turn_separator_metrics(&mut cells, &turn_id, &params, &now);
     } else if matches!(method, "turn/started" | "turn/created") && !turn_id.is_empty() {
+        let turn = params.get("turn").unwrap_or(&Value::Null);
         upsert_cell(
             &mut cells,
             new_cell(
@@ -99,7 +121,11 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
                 None,
                 None,
                 false,
-                None,
+                Some(json!({
+                    "startedAt": turn.get("startedAt"),
+                    "completedAt": turn.get("completedAt"),
+                    "computedDurationMs": turn.get("durationMs"),
+                })),
             ),
         );
     } else if matches!(
@@ -112,16 +138,22 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
             "completed"
         };
         for cell in &mut cells {
-            if cell.get("turnId").and_then(Value::as_str) == Some(turn_id.as_str())
-                && cell.get("isStreaming").and_then(Value::as_bool) == Some(true)
-            {
+            if cell.get("turnId").and_then(Value::as_str) != Some(turn_id.as_str()) {
+                continue;
+            }
+            let is_separator = cell.get("kind").and_then(Value::as_str) == Some("turnSeparator");
+            let is_streaming = cell.get("isStreaming").and_then(Value::as_bool) == Some(true);
+            if is_separator || is_streaming {
                 if let Some(map) = cell.as_object_mut() {
                     map.insert("status".to_string(), Value::String(status.to_string()));
-                    map.insert("isStreaming".to_string(), Value::Bool(false));
+                    if is_streaming {
+                        map.insert("isStreaming".to_string(), Value::Bool(false));
+                    }
                     map.insert("updatedAt".to_string(), Value::String(now.clone()));
                 }
             }
         }
+        update_turn_separator_metrics(&mut cells, &turn_id, &params, &now);
     } else if method == "turn/diff/updated" && !turn_id.is_empty() {
         let has_snapshot = params.get("diff").is_some()
             || params.get("delta").is_some()
@@ -270,7 +302,12 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
     {
         let base_kind = kind_for(&item_type, &lower);
         let id = if base_kind == "userMessage" {
-            format!("user-{turn_id}")
+            let client_id = first_string(&[item.get("clientId"), item.get("client_id")]);
+            if client_id.is_empty() {
+                format!("user-{turn_id}")
+            } else {
+                format!("user-{client_id}")
+            }
         } else if item_id.is_empty() {
             format!("{}-{turn_id}", base_kind)
         } else {
@@ -299,19 +336,38 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
         } else {
             "inProgress"
         };
-        let text = first_string(&[
-            item.get("text"),
-            item.get("content"),
-            item.get("summary"),
-            item.get("message"),
-        ]);
-        let details = first_string(&[
-            item.get("output"),
-            item.get("result"),
-            item.get("diff"),
-            item.get("commandOutput"),
-        ]);
-        let title = first_string(&[item.get("title"), item.get("name"), item.get("command")]);
+        let presentation_owned_text = base_kind == "userMessage"
+            && existing.is_some_and(|cell| {
+                cell.pointer("/metadata/clientUserMessageId").is_some()
+                    || cell
+                        .pointer("/metadata/attachments")
+                        .and_then(Value::as_array)
+                        .is_some()
+            });
+        let text = if presentation_owned_text {
+            existing
+                .and_then(|cell| cell.get("markdownText"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            item_markdown(&item)
+        };
+        let details = item_details(&item);
+        let title = if item_type.contains("contextcompaction") {
+            match status {
+                "failed" => "Compaction failed".to_string(),
+                "completed" => "Compacted".to_string(),
+                _ => "Compacting".to_string(),
+            }
+        } else {
+            first_string(&[
+                item.get("title"),
+                item.get("name"),
+                item.get("tool"),
+                item.get("command"),
+            ])
+        };
         upsert_cell(
             &mut cells,
             new_cell(
@@ -325,7 +381,12 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
                 } else {
                     Some(title)
                 },
-                Some(first_string(&[item.get("command"), item.get("path")])),
+                Some(first_string(&[
+                    item.get("command"),
+                    item.get("path"),
+                    item.get("cwd"),
+                    item.get("server"),
+                ])),
                 if text.is_empty() { None } else { Some(text) },
                 if details.is_empty() {
                     None
@@ -333,14 +394,10 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
                     Some(details)
                 },
                 method != "item/completed",
-                Some(json!({
-                    "itemType": item.get("type"),
-                    "streamPhase": if is_agent_message && !phase.is_empty() {
-                        Value::String(phase)
-                    } else {
-                        Value::Null
-                    }
-                })),
+                Some(item_timeline_metadata(
+                    &item,
+                    (is_agent_message && !phase.is_empty()).then_some(phase.as_str()),
+                )),
             ),
         );
     } else if method == "error" || method == "stream/error" || method == "stream_error" {
@@ -383,9 +440,9 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
                 "completed",
                 &now,
                 Some(if lower.contains("enter") {
-                    "Preparing review".to_string()
+                    "Entered review mode".to_string()
                 } else {
-                    "Review finished".to_string()
+                    "Exited review mode".to_string()
                 }),
                 None,
                 None,
@@ -395,7 +452,13 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
                     Some(review.clone())
                 },
                 false,
-                None,
+                Some(json!({
+                    "itemType": if lower.contains("enter") {
+                        "enteredReviewMode"
+                    } else {
+                        "exitedReviewMode"
+                    },
+                })),
             ),
         );
         if !review.is_empty() {
@@ -422,6 +485,12 @@ pub(super) fn reduce_timeline(snapshot: &mut Value, message: &Value) {
         }
     }
 
+    if method == "turn/diff/updated"
+        || item_type.contains("filechange")
+        || lower.contains("filechange")
+    {
+        super::codex_diff_coverage::mark_superseded_aggregate_diff(&mut cells, &turn_id);
+    }
     trim_cells(&mut cells);
     object.insert("timelineCells".to_string(), Value::Array(cells));
 }

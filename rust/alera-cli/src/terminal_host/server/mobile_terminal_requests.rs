@@ -9,14 +9,20 @@ use crate::terminal_host::protocol::{
     int_or, RUNTIME_HOST_AGENT_PROFILES_CAPABILITY,
     RUNTIME_HOST_AGENT_PROFILE_PROMPT_LAUNCH_CAPABILITY,
     RUNTIME_HOST_AGENT_QUOTA_CLAUDE_TUI_CAPABILITY, RUNTIME_HOST_AGENT_STATUS_CAPABILITY,
-    RUNTIME_HOST_AI_TEXT_WORKSPACE_IDENTITY_CAPABILITY, RUNTIME_HOST_AUTOMATIONS_CAPABILITY,
-    RUNTIME_HOST_BINARY_FRAMES_CAPABILITY, RUNTIME_HOST_CAPABILITY,
-    RUNTIME_HOST_CODEX_CHAT_CAPABILITY, RUNTIME_HOST_CODEX_RESET_CREDITS_CAPABILITY,
-    RUNTIME_HOST_LIFECYCLE_CAPABILITY, RUNTIME_HOST_MANAGED_WORKSPACE_CAPABILITY,
-    RUNTIME_HOST_MOBILE_AGENT_QUOTA_CAPABILITY, RUNTIME_HOST_MOBILE_CAPABILITY,
-    RUNTIME_HOST_MOBILE_CLOUD_ENROLLMENT_CAPABILITY, RUNTIME_HOST_MOBILE_HOST_TOOLS_CAPABILITY,
-    RUNTIME_HOST_MOBILE_MUTATIONS_CAPABILITY, RUNTIME_HOST_MOBILE_PORTABLE_SETTINGS_CAPABILITY,
+    RUNTIME_HOST_AI_DICTATION_CAPABILITY, RUNTIME_HOST_AI_TEXT_WORKSPACE_IDENTITY_CAPABILITY,
+    RUNTIME_HOST_AUTOMATIONS_CAPABILITY, RUNTIME_HOST_BINARY_FRAMES_CAPABILITY,
+    RUNTIME_HOST_CAPABILITY, RUNTIME_HOST_CODEX_CHAT_CAPABILITY,
+    RUNTIME_HOST_CODEX_GOALS_CAPABILITY, RUNTIME_HOST_CODEX_RESET_CREDITS_CAPABILITY,
+    RUNTIME_HOST_CODEX_TURN_POLICY_CAPABILITY, RUNTIME_HOST_LIFECYCLE_CAPABILITY,
+    RUNTIME_HOST_MANAGED_WORKSPACE_CAPABILITY, RUNTIME_HOST_MOBILE_AGENT_QUOTA_CAPABILITY,
+    RUNTIME_HOST_MOBILE_CAPABILITY, RUNTIME_HOST_MOBILE_CLOUD_ENROLLMENT_CAPABILITY,
+    RUNTIME_HOST_MOBILE_CODEX_SESSIONS_CAPABILITY,
+    RUNTIME_HOST_MOBILE_CODEX_WORKSPACE_FILES_CAPABILITY,
+    RUNTIME_HOST_MOBILE_HOST_TOOLS_CAPABILITY, RUNTIME_HOST_MOBILE_MUTATIONS_CAPABILITY,
+    RUNTIME_HOST_MOBILE_PORTABLE_SETTINGS_CAPABILITY,
     RUNTIME_HOST_MOBILE_PROJECT_MANAGEMENT_CAPABILITY,
+    RUNTIME_HOST_MOBILE_PROMPT_ATTACHMENT_READ_CAPABILITY,
+    RUNTIME_HOST_MOBILE_PROMPT_FILE_UPLOAD_CAPABILITY,
     RUNTIME_HOST_MOBILE_PROMPT_IMAGE_UPLOAD_CAPABILITY,
     RUNTIME_HOST_MOBILE_SIDEBAR_PARITY_CAPABILITY, RUNTIME_HOST_MOBILE_TAB_RENAME_CAPABILITY,
     RUNTIME_HOST_MOBILE_TERMINAL_TITLES_CAPABILITY, RUNTIME_HOST_RESTART_CAPABILITY,
@@ -64,8 +70,15 @@ pub(super) const MOBILE_HELLO_CAPABILITIES: &[&str] = &[
     RUNTIME_HOST_AGENT_PROFILE_PROMPT_LAUNCH_CAPABILITY,
     RUNTIME_HOST_BINARY_FRAMES_CAPABILITY,
     RUNTIME_HOST_MOBILE_PROMPT_IMAGE_UPLOAD_CAPABILITY,
+    RUNTIME_HOST_MOBILE_PROMPT_FILE_UPLOAD_CAPABILITY,
+    RUNTIME_HOST_MOBILE_PROMPT_ATTACHMENT_READ_CAPABILITY,
+    RUNTIME_HOST_MOBILE_CODEX_WORKSPACE_FILES_CAPABILITY,
+    RUNTIME_HOST_MOBILE_CODEX_SESSIONS_CAPABILITY,
     RUNTIME_HOST_CODEX_CHAT_CAPABILITY,
+    RUNTIME_HOST_CODEX_GOALS_CAPABILITY,
+    RUNTIME_HOST_CODEX_TURN_POLICY_CAPABILITY,
     RUNTIME_HOST_AUTOMATIONS_CAPABILITY,
+    RUNTIME_HOST_AI_DICTATION_CAPABILITY,
 ];
 
 impl ServerActor {
@@ -146,10 +159,7 @@ impl ServerActor {
                     payload,
                     &mut attachment,
                 );
-                Ok(json!({
-                    "tab": tab,
-                    "attachment": attachment,
-                }))
+                Ok(self.terminal_tab_response_for_client(client_id, tab, attachment))
             }
             Err(error) => {
                 let _ = self.runtime_store.remove_workspace_tab(&tab.id).await;
@@ -219,10 +229,7 @@ impl ServerActor {
             .create_or_attach(client_id, &attachment_payload)
             .await?;
         self.claim_mobile_terminal_viewport(client_id, &session_id, payload, &mut attachment);
-        Ok(json!({
-            "tab": tab,
-            "attachment": attachment,
-        }))
+        Ok(self.terminal_tab_response_for_client(client_id, tab, attachment))
     }
 
     pub(super) async fn restart_mobile_terminal(
@@ -266,10 +273,22 @@ impl ServerActor {
             .restart_terminal(client_id, &attachment_payload)
             .await?;
         self.claim_mobile_terminal_viewport(client_id, &session_id, payload, &mut attachment);
-        Ok(json!({
+        Ok(self.terminal_tab_response_for_client(client_id, tab, attachment))
+    }
+
+    pub(super) fn terminal_tab_response_for_client(
+        &self,
+        client_id: u64,
+        tab: WorkspaceTabRecord,
+        attachment: Value,
+    ) -> Value {
+        let tab = self
+            .workspace_tab_for_client(client_id, tab)
+            .expect("terminal tabs are supported by every client");
+        json!({
             "tab": tab,
             "attachment": attachment,
-        }))
+        })
     }
 }
 
@@ -335,6 +354,18 @@ pub(super) fn mobile_request_allowed(request_type: &str) -> bool {
             | "mobile.promptImage.chunk"
             | "mobile.promptImage.complete"
             | "mobile.promptImage.cancel"
+            | "mobile.workspaceQuickOpen.start"
+            | "mobile.workspaceQuickOpen.search"
+            | "mobile.workspaceQuickOpen.stop"
+            | "mobile.workspaceFile.read"
+            | "mobile.codexSavedPrompts.list"
+            | "mobile.promptFile.start"
+            | "mobile.promptFile.chunk"
+            | "mobile.promptFile.complete"
+            | "mobile.promptFile.cancel"
+            | "mobile.promptAttachment.read"
+            | "mobile.aiDictation.transcribe"
+            | "mobile.aiDictation.cancel"
             | "tab.list"
             | "tab.find"
             | "tab.rename"
@@ -344,6 +375,7 @@ pub(super) fn mobile_request_allowed(request_type: &str) -> bool {
             | "mobile.cloudEnrollment.create"
             | "mobile.cloudSubscriptions.refresh"
             | "agentQuota.snapshot"
+            | "agentUsage.snapshot"
             | "agentQuota.fetchClaudeTui"
             | "agentQuota.consumeCodexResetCredit"
             | "cliRegistration.status"
@@ -369,9 +401,26 @@ pub(super) fn mobile_request_allowed(request_type: &str) -> bool {
             | "detach"
             | "terminate"
             | "codex.thread.open"
+            | "codex.thread.list"
+            | "codex.threads.list"
+            | "codex.session.list"
+            | "codex.thread.resume"
+            | "codex.session.resume"
+            | "codex.thread.history"
+            | "codex.thread.turns.list"
+            | "codex.session.history"
+            | "codex.thread.new"
+            | "codex.session.new"
+            | "codex.thread.clear"
+            | "codex.session.clear"
             | "codex.tab.create"
+            | "codex.tab.configure"
+            | "codex.thread.recover"
             | "codex.thread.snapshot"
             | "codex.thread.items.list"
+            | "codex.goal.get"
+            | "codex.goal.set"
+            | "codex.goal.clear"
             | "codex.model.list"
             | "codex.collaborationModes.list"
             | "codex.skills.list"
@@ -381,8 +430,10 @@ pub(super) fn mobile_request_allowed(request_type: &str) -> bool {
             | "codex.turn.steer"
             | "codex.thread.rename"
             | "codex.thread.compact"
+            | "codex.review.branches"
             | "codex.review.start"
             | "codex.response"
+            | "codex.request.snooze"
             | "automation.list"
             | "automation.show"
             | "automation.upsert"
@@ -407,4 +458,35 @@ pub(super) fn mobile_request_allowed(request_type: &str) -> bool {
             | "automation.import"
             | "automation.policy"
     )
+}
+
+#[cfg(test)]
+mod mobile_codex_file_surface_tests {
+    use super::*;
+
+    #[test]
+    fn advertises_and_allows_mobile_codex_file_surfaces() {
+        assert!(MOBILE_HELLO_CAPABILITIES
+            .contains(&RUNTIME_HOST_MOBILE_CODEX_WORKSPACE_FILES_CAPABILITY));
+        assert!(MOBILE_HELLO_CAPABILITIES.contains(&RUNTIME_HOST_MOBILE_CODEX_SESSIONS_CAPABILITY));
+        assert!(
+            MOBILE_HELLO_CAPABILITIES.contains(&RUNTIME_HOST_MOBILE_PROMPT_FILE_UPLOAD_CAPABILITY)
+        );
+        assert!(MOBILE_HELLO_CAPABILITIES
+            .contains(&RUNTIME_HOST_MOBILE_PROMPT_ATTACHMENT_READ_CAPABILITY));
+        for request in [
+            "mobile.workspaceQuickOpen.start",
+            "mobile.workspaceQuickOpen.search",
+            "mobile.workspaceQuickOpen.stop",
+            "mobile.workspaceFile.read",
+            "mobile.codexSavedPrompts.list",
+            "mobile.promptFile.start",
+            "mobile.promptFile.chunk",
+            "mobile.promptFile.complete",
+            "mobile.promptFile.cancel",
+            "mobile.promptAttachment.read",
+        ] {
+            assert!(mobile_request_allowed(request), "{request}");
+        }
+    }
 }

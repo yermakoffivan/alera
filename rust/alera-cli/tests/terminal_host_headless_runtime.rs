@@ -1,5 +1,7 @@
 //! Runtime-owned terminal lifecycle tests that do not connect a desktop client.
 
+#![cfg(unix)]
+
 use alera_core::child_process::windowless_command;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -380,6 +382,7 @@ fn runtime_hook_receiver_detects_every_enabled_agent() {
                 cursor: true,
                 agy: true,
                 opencode: true,
+                opencode2: true,
                 pi: true,
                 amp: true,
                 grok: true,
@@ -399,10 +402,10 @@ fn runtime_hook_receiver_detects_every_enabled_agent() {
         dir.path().join("agent-runtime-homes/codex/home/hooks.json"),
         claude_settings.clone(),
         test_home.join(".copilot/hooks/alera.json"),
-        test_home.join(".cursor/hooks.json"),
         test_home.join(".gemini/config/hooks.json"),
         grok_hooks.clone(),
         test_home.join(".config/opencode/plugins/alera-agent-status.js"),
+        test_home.join(".config/opencode/plugins/alera-agent-status-v2.js"),
         test_home.join(".pi/agent/extensions/alera-agent-status.ts"),
         test_home.join(".config/amp/plugins/alera-agent-status.ts"),
     ] {
@@ -422,6 +425,14 @@ fn runtime_hook_receiver_detects_every_enabled_agent() {
     );
     assert_eq!(read_response(&mut reader, 1)["ok"], json!(true));
 
+    // Cursor is delivered as a per-session plugin the launch mints, never as an
+    // entry in the user's own hooks.json.
+    wait_for_path(
+        &dir.path()
+            .join("agent-runtime-overlays/cursor/hook-session/plugin/hooks/hooks.json"),
+    );
+    assert!(!test_home.join(".cursor/hooks.json").exists());
+
     for (index, (agent, event_name)) in [
         ("codex", "UserPromptSubmit"),
         ("claude", "UserPromptSubmit"),
@@ -429,6 +440,7 @@ fn runtime_hook_receiver_detects_every_enabled_agent() {
         ("cursor", "beforeSubmitPrompt"),
         ("agy", "PreInvocation"),
         ("opencode", "SessionBusy"),
+        ("opencode2", "SessionBusy"),
         ("pi", "agent_start"),
         ("amp", "session.start"),
         ("grok", "UserPromptSubmit"),

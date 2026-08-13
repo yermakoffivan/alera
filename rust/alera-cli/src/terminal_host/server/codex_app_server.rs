@@ -21,12 +21,17 @@ use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 use crate::login_shell_environment::apply_login_shell_path;
 use crate::terminal_host::host_error::{HostError, HostResult};
 
+use super::codex_app_server_history::ThreadHistoryCache;
+use super::codex_app_server_session_state::CodexAppServerSessionState;
 use super::ServerCommand;
 
 const CODEX_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const CODEX_OVERLOAD_RETRIES: usize = 3;
-
 type PendingRequests = Arc<Mutex<HashMap<i64, oneshot::Sender<HostResult<Value>>>>>;
+
+fn same_codex_app_server_instance(current: &Arc<()>, expected: &Arc<()>) -> bool {
+    Arc::ptr_eq(current, expected)
+}
 
 #[derive(Clone)]
 pub(super) struct CodexAppServer {
@@ -34,6 +39,9 @@ pub(super) struct CodexAppServer {
     pending: PendingRequests,
     _child: Arc<Mutex<Child>>,
     next_id: Arc<AtomicI64>,
+    pub(super) thread_history: Arc<Mutex<ThreadHistoryCache>>,
+    pub(super) session_state: Arc<CodexAppServerSessionState>,
+    instance: Arc<()>,
 }
 
 impl CodexAppServer {
@@ -73,6 +81,9 @@ impl CodexAppServer {
             pending: Arc::new(Mutex::new(HashMap::new())),
             _child: Arc::new(Mutex::new(child)),
             next_id: Arc::new(AtomicI64::new(1)),
+            thread_history: Arc::new(Mutex::new(ThreadHistoryCache::default())),
+            session_state: Arc::new(CodexAppServerSessionState::default()),
+            instance: Arc::new(()),
         };
         tokio::spawn(read_codex_messages(
             BufReader::new(stdout),
@@ -80,19 +91,7 @@ impl CodexAppServer {
             inbox,
         ));
         tokio::spawn(read_codex_stderr(BufReader::new(stderr)));
-        server
-            .request(
-                "initialize",
-                json!({
-                    "clientInfo": {
-                        "name": "alera",
-                        "title": "Alera",
-                        "version": env!("CARGO_PKG_VERSION")
-                    },
-                    "capabilities": {"experimentalApi": true}
-                }),
-            )
-            .await?;
+        server.request("initialize", initialize_params()).await?;
         server.notify("initialized", json!({})).await?;
         Ok(server)
     }
@@ -107,6 +106,14 @@ impl CodexAppServer {
             }
         }
         unreachable!("Codex overload retry loop always returns");
+    }
+
+    pub(super) fn instance_token(&self) -> Arc<()> {
+        self.instance.clone()
+    }
+
+    pub(super) fn matches_instance(&self, token: &Arc<()>) -> bool {
+        same_codex_app_server_instance(&self.instance, token)
     }
 
     async fn request_once(&self, method: &str, params: Value) -> HostResult<Value> {
@@ -162,18 +169,6 @@ impl CodexAppServer {
         self.write_message(message).await
     }
 
-    pub(super) fn interrupt_in_background(&self, thread_id: String, turn_id: String) {
-        let server = self.clone();
-        tokio::spawn(async move {
-            let _ = server
-                .request(
-                    "turn/interrupt",
-                    json!({"threadId": thread_id, "turnId": turn_id}),
-                )
-                .await;
-        });
-    }
-
     async fn write_message(&self, message: Value) -> HostResult<()> {
         let mut stdin = self.stdin.lock().await;
         let line = serde_json::to_vec(&message)
@@ -191,6 +186,20 @@ impl CodexAppServer {
             .await
             .map_err(|error| HostError::state(format!("Codex app-server input failed: {error}")))
     }
+}
+
+fn initialize_params() -> Value {
+    json!({
+        "clientInfo": {
+            "name": "alera",
+            "title": "Alera",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "capabilities": {
+            "experimentalApi": true,
+            "mcpServerOpenaiFormElicitation": true
+        }
+    })
 }
 
 async fn read_codex_messages<R>(
@@ -282,8 +291,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        codex_error_message, codex_overload_delay, is_codex_overloaded, read_codex_messages,
-        PendingRequests,
+        codex_error_message, codex_overload_delay, initialize_params, is_codex_overloaded,
+        read_codex_messages, same_codex_app_server_instance, PendingRequests,
     };
     use crate::terminal_host::host_error::HostError;
     use serde_json::json;
@@ -322,6 +331,27 @@ mod tests {
             codex_overload_delay(20),
             std::time::Duration::from_millis(200)
         );
+    }
+
+    #[test]
+    fn initialize_advertises_supported_experimental_forms() {
+        let params = initialize_params();
+        assert_eq!(params["clientInfo"]["name"], "alera");
+        assert_eq!(params["capabilities"]["experimentalApi"], true);
+        assert_eq!(
+            params["capabilities"]["mcpServerOpenaiFormElicitation"],
+            true
+        );
+    }
+
+    #[test]
+    fn app_server_instance_tokens_only_match_the_server_that_created_them() {
+        let first = Arc::new(());
+        let first_clone = first.clone();
+        let replacement = Arc::new(());
+
+        assert!(same_codex_app_server_instance(&first, &first_clone));
+        assert!(!same_codex_app_server_instance(&first, &replacement));
     }
 
     #[tokio::test]

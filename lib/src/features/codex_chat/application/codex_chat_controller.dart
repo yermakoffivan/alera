@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:alera/src/features/codex_chat/domain/codex_file_reference.dart';
 import 'package:alera/src/features/codex_chat/domain/codex_chat_models.dart';
+import 'package:alera/src/features/codex_chat/domain/codex_timeline.dart';
+import 'package:alera/src/features/codex_chat/domain/codex_timeline_identity.dart';
 import 'package:alera/src/features/codex_chat/infra/codex_chat_host_client.dart';
 import 'package:alera/src/features/settings/application/settings_controller.dart';
 import 'package:alera/src/features/settings/domain/alera_settings.dart';
@@ -10,20 +14,59 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 part 'codex_chat_controller.g.dart';
 part 'codex_chat_controller_helpers.dart';
+part 'codex_chat_controller_sessions.dart';
+part 'codex_chat_controller_catalogues.dart';
+part 'codex_chat_controller_request_responses.dart';
+part 'codex_chat_controller_events.dart';
+part 'codex_chat_controller_lifecycle.dart';
+part 'codex_chat_controller_goals.dart';
 
 @Riverpod(keepAlive: false)
 RuntimeHostClient codexChatRuntimeClient(Ref ref) =>
     ref.watch(runtimeHostClientProvider);
+
+@Riverpod(keepAlive: true)
+CodexChatHostClient codexChatHostClient(Ref ref) {
+  final host = CodexChatHostClient(ref.watch(codexChatRuntimeClientProvider));
+  ref.onDispose(host.dispose);
+  return host;
+}
 
 @Riverpod(keepAlive: false)
 class CodexChatController extends _$CodexChatController {
   late final CodexChatHostClient _host;
   StreamSubscription<RuntimeHostEvent>? _events;
   Timer? _interruptSafetyTimer;
+  bool _historyLoading = false;
+  int _sessionTransitionCount = 0;
+  List<CodexQueuedMessage> _suspendedSessionQueue =
+      const <CodexQueuedMessage>[];
+  bool _sessionTransitionSucceeded = false;
+  String? _threadId;
+  int _threadGeneration = 0;
+  int _capabilityGeneration = 0;
+  int _catalogueGeneration = 0;
+  bool _goalCapabilityAdvertised = false;
+  bool _goalsAvailable = true;
+  bool _recoveryPending = false;
+  final List<RuntimeHostEvent> _deferredThreadEvents = <RuntimeHostEvent>[];
+  bool _opening = false;
+  int _loadGeneration = 0;
+
+  bool get _sessionTransitionInProgress => _sessionTransitionCount > 0;
+
+  String? get threadId => _threadId;
+
+  bool get canSteer =>
+      !state.loading &&
+      !state.interrupting &&
+      state.recovery == null &&
+      !_sessionTransitionInProgress &&
+      state.snapshot.activeTurnId != null;
 
   @override
   CodexChatState build(String tabId) {
-    _host = CodexChatHostClient(ref.watch(codexChatRuntimeClientProvider));
+    _host = ref.watch(codexChatHostClientProvider);
     _events = _host.events.listen(_onRuntimeEvent);
     ref.onDispose(() {
       _interruptSafetyTimer?.cancel();
@@ -35,27 +78,35 @@ class CodexChatController extends _$CodexChatController {
       selectedModel: defaults.selectedModel,
       reasoningEffort: defaults.reasoningEffort,
       speedMode: defaults.speedMode,
-      permissionMode: defaults.permissionMode,
+      permissionMode: _supportedPermissionMode(defaults.permissionMode),
       planMode: defaults.planMode,
       collaborationMode: defaults.planMode ? 'plan' : null,
     );
   }
 
-  Future<void> _load() async {
-    try {
-      final open = await _host.openThread(tabId);
-      if (!ref.mounted) return;
-      final openSnapshot = CodexChatSnapshot.fromJson(open['snapshot']);
-      state = state.copyWith(
-        loading: false,
-        snapshot: openSnapshot,
-        selectedModel: _string(open['model']) ?? state.selectedModel,
-        error: null,
-      );
-      await _loadCatalogues();
-    } catch (error) {
-      if (!ref.mounted) return;
-      state = state.copyWith(loading: false, error: _safeError(error));
+  Future<void> _refreshCapabilities() async {
+    final generation = ++_capabilityGeneration;
+    var supportsSessions = await _host.supportsSessions();
+    if (!supportsSessions) {
+      supportsSessions = await _host.supportsSessions();
+    }
+    final supportsAutoReview = await _host.supportsTurnPolicy();
+    final supportsGoals = await _host.supportsGoals();
+    if (!ref.mounted || generation != _capabilityGeneration) return;
+    _goalCapabilityAdvertised = supportsGoals;
+    final permissionMode =
+        !supportsAutoReview && state.permissionMode == 'auto-review'
+        ? 'on-request'
+        : state.permissionMode;
+    final permissionChanged = permissionMode != state.permissionMode;
+    state = state.copyWith(
+      supportsSessions: supportsSessions,
+      supportsAutoReview: supportsAutoReview,
+      supportsGoals: supportsGoals && _goalsAvailable,
+      permissionMode: permissionMode,
+    );
+    if (permissionChanged) {
+      _persistTabConfiguration();
     }
   }
 
@@ -64,80 +115,60 @@ class CodexChatController extends _$CodexChatController {
     await _load();
   }
 
-  Future<void> _loadCatalogues() async {
-    final models = await _loadModels();
-    List<Map<String, Object?>> modes = const <Map<String, Object?>>[];
-    List<Map<String, Object?>> skills = const <Map<String, Object?>>[];
-    List<Map<String, Object?>> apps = const <Map<String, Object?>>[];
-    try {
-      final payload = await _host.listCollaborationModes();
-      modes = _items(payload);
-    } catch (_) {
-      // Collaboration modes are optional on older app-server builds.
+  Future<void> recoverThread() async {
+    if (_recoveryPending || state.recovery == null) return;
+    final expectedThreadId = _threadId;
+    if (expectedThreadId == null) {
+      state = state.copyWith(
+        error:
+            'The Codex conversation changed before recovery. Review the current conversation and try again.',
+      );
+      return;
     }
+    _recoveryPending = true;
     try {
-      skills = _items(await _host.listSkills(tabId));
-    } catch (_) {
-      // Skills are optional on older app-server builds.
+      final response = await _host.recoverThread(
+        tabId,
+        expectedThreadId: expectedThreadId,
+      );
+      if (!ref.mounted) return;
+      _threadId = _string(response['threadId']);
+      _threadGeneration += 1;
+      state = _applyConfiguration(
+        state.copyWith(
+          snapshot: CodexChatSnapshot.fromJson(response['snapshot']),
+          historyNextCursor: null,
+          recovery: null,
+          error: null,
+        ),
+        response['configuration'],
+      );
+      _drainQueuedMessageIfIdle();
+    } catch (error) {
+      if (!ref.mounted) return;
+      state = state.copyWith(error: _safeError(error));
+    } finally {
+      _recoveryPending = false;
     }
-    try {
-      apps = _items(await _host.listApps(tabId));
-    } catch (_) {
-      // Apps are optional on older app-server builds.
-    }
-    if (!ref.mounted) return;
-    final selectedModel =
-        state.selectedModel ??
-        (models.where((model) => model.isDefault).firstOrNull ??
-                (models.isNotEmpty ? models.first : null))
-            ?.id;
-    final selectedOption = models
-        .where((model) => model.id == selectedModel)
-        .firstOrNull;
-    final initialReasoning =
-        selectedOption?.defaultReasoningEffort ?? state.reasoningEffort;
-    state = state.copyWith(
-      models: models,
-      collaborationModes: modes,
-      skills: skills,
-      apps: apps,
-      selectedModel: selectedModel,
-      reasoningEffort: _supportedEffort(selectedOption, initialReasoning),
-      speedMode: selectedOption?.supportsFastMode == false
-          ? 'normal'
-          : state.speedMode,
-    );
-  }
-
-  Future<List<CodexModelOption>> _loadModels() async {
-    try {
-      final payload = await _host.listModels();
-      final items = _items(payload);
-      final models = <CodexModelOption>[
-        for (final item in items) CodexModelOption.fromJson(item),
-      ];
-      if (models.isNotEmpty) return models;
-    } catch (_) {
-      // Fall back below. The fallback is intentionally a current Codex set,
-      // never a persisted model snapshot from an older app.
-    }
-    return const <CodexModelOption>[
-      CodexModelOption(id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol'),
-    ];
   }
 
   Future<void> send(
     String text, {
     List<CodexInputAttachment> attachments = const <CodexInputAttachment>[],
+    List<CodexDraftItem> draftItems = const <CodexDraftItem>[],
   }) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty && attachments.isEmpty) return;
+    if (trimmed.isEmpty && attachments.isEmpty && draftItems.isEmpty) return;
     final message = CodexQueuedMessage(
       text: trimmed,
       attachments: List<CodexInputAttachment>.unmodifiable(attachments),
+      draftItems: List<CodexDraftItem>.unmodifiable(draftItems),
       id: _newClientMessageId(),
     );
-    if (state.busy) {
+    if (state.loading ||
+        state.recovery != null ||
+        state.busy ||
+        _sessionTransitionInProgress) {
       state = state.copyWith(
         queuedMessages: <CodexQueuedMessage>[...state.queuedMessages, message],
       );
@@ -152,6 +183,8 @@ class CodexChatController extends _$CodexChatController {
       await _host.startTurn(
         tabId,
         _buildInput(message, state),
+        expectedThreadId: _threadId,
+        userMessage: _userMessagePresentation(message),
         model: state.selectedModel,
         reasoningEffort: state.reasoningEffort,
         speedMode: state.speedMode,
@@ -168,6 +201,22 @@ class CodexChatController extends _$CodexChatController {
         state = state.copyWith(sending: false, error: _safeError(error));
       }
     }
+  }
+
+  void _drainQueuedMessageIfIdle() {
+    if (!ref.mounted ||
+        state.loading ||
+        state.recovery != null ||
+        state.busy ||
+        _sessionTransitionInProgress ||
+        state.queuedMessages.isEmpty) {
+      return;
+    }
+    final nextMessage = state.queuedMessages.first;
+    state = state.copyWith(
+      queuedMessages: state.queuedMessages.skip(1).toList(growable: false),
+    );
+    unawaited(_sendNow(nextMessage));
   }
 
   Future<void> stop() async {
@@ -188,15 +237,34 @@ class CodexChatController extends _$CodexChatController {
     }
   }
 
-  Future<void> steer(String text) async {
+  Future<bool> steer(
+    String text, {
+    List<CodexInputAttachment> attachments = const <CodexInputAttachment>[],
+    List<CodexDraftItem> draftItems = const <CodexDraftItem>[],
+  }) async {
     final turnId = state.snapshot.activeTurnId;
-    if (turnId == null || text.trim().isEmpty) return;
+    if (!canSteer ||
+        turnId == null ||
+        (text.trim().isEmpty && attachments.isEmpty && draftItems.isEmpty)) {
+      return false;
+    }
     try {
-      await _host.steer(tabId, turnId, <Map<String, Object?>>[
-        <String, Object?>{'type': 'text', 'text': text.trim()},
-      ], clientUserMessageId: _newClientMessageId());
+      final message = CodexQueuedMessage(
+        text: text.trim(),
+        attachments: attachments,
+        draftItems: draftItems,
+      );
+      await _host.steer(
+        tabId,
+        turnId,
+        _buildInput(message, state),
+        userMessage: _userMessagePresentation(message),
+        clientUserMessageId: _newClientMessageId(),
+      );
+      return true;
     } catch (error) {
       state = state.copyWith(error: _safeError(error));
+      return false;
     }
   }
 
@@ -221,6 +289,7 @@ class CodexChatController extends _$CodexChatController {
   Future<void> startReview({
     String target = 'uncommittedChanges',
     String? argument,
+    String? commitTitle,
     String? delivery,
   }) async {
     try {
@@ -228,6 +297,7 @@ class CodexChatController extends _$CodexChatController {
         tabId,
         target: target,
         argument: argument,
+        commitTitle: commitTitle,
         delivery: delivery,
       );
     } catch (error) {
@@ -237,6 +307,7 @@ class CodexChatController extends _$CodexChatController {
 
   Future<void> implementPlan() async {
     state = state.copyWith(planMode: false, collaborationMode: null);
+    _persistConfiguration();
     await send('Implement plan');
   }
 
@@ -244,7 +315,8 @@ class CodexChatController extends _$CodexChatController {
   /// implement-plan question. Keep the actions as ordinary user turns so the
   /// server remains the source of truth for plan execution.
   Future<void> declinePlan() async {
-    state = state.copyWith(planMode: false, collaborationMode: null);
+    state = state.copyWith(planMode: true, collaborationMode: 'plan');
+    _persistConfiguration();
     await send('Do not implement the plan.');
   }
 
@@ -252,93 +324,8 @@ class CodexChatController extends _$CodexChatController {
     final text = refinement.trim();
     if (text.isEmpty) return;
     state = state.copyWith(planMode: true, collaborationMode: 'plan');
+    _persistConfiguration();
     await send(text);
-  }
-
-  Future<void> respondApproval(
-    CodexPendingRequest request, {
-    required bool accepted,
-    bool forSession = false,
-  }) async {
-    try {
-      final result = request.isPermissionsRequest
-          ? <String, Object?>{
-              'permissions': accepted
-                  ? _permissionSubset(request.params['permissions'])
-                  : const <String, Object?>{},
-              'scope': forSession ? 'session' : 'turn',
-            }
-          : <String, Object?>{
-              'decision': accepted
-                  ? forSession
-                        ? 'acceptForSession'
-                        : 'accept'
-                  : 'decline',
-            };
-      await _host.respond(request.id, result: result);
-    } catch (error) {
-      state = state.copyWith(error: _safeError(error));
-    }
-  }
-
-  Future<void> respondQuestion(
-    CodexPendingRequest request,
-    Map<String, Object?> answers,
-  ) async {
-    try {
-      await _host.respond(
-        request.id,
-        result: <String, Object?>{
-          'answers': <String, Object?>{
-            for (final entry in answers.entries)
-              entry.key: <String, Object?>{'answers': entry.value},
-          },
-        },
-      );
-    } catch (error) {
-      state = state.copyWith(error: _safeError(error));
-    }
-  }
-
-  Future<void> respondElicitation(
-    CodexPendingRequest request, {
-    required String action,
-    Map<String, Object?> content = const <String, Object?>{},
-  }) async {
-    try {
-      await _host.respond(
-        request.id,
-        result: <String, Object?>{
-          'action': action,
-          if (action == 'accept') 'content': content,
-        },
-      );
-    } catch (error) {
-      state = state.copyWith(error: _safeError(error));
-    }
-  }
-
-  Future<void> rejectRequest(CodexPendingRequest request) async {
-    try {
-      await _host.respond(
-        request.id,
-        error: <String, Object?>{
-          'code': -32601,
-          'message': 'Alera does not support this Codex request.',
-        },
-      );
-    } catch (error) {
-      state = state.copyWith(error: _safeError(error));
-    }
-  }
-
-  Future<void> submitQuestions(
-    CodexPendingRequest request,
-    Map<String, List<String>> answers,
-  ) async {
-    await respondQuestion(request, <String, Object?>{
-      for (final entry in answers.entries) entry.key: entry.value,
-    });
   }
 
   void setModel(String? model) {
@@ -346,25 +333,25 @@ class CodexChatController extends _$CodexChatController {
     final option = state.models.where((item) => item.id == model).firstOrNull;
     state = state.copyWith(
       selectedModel: model,
-      reasoningEffort: _supportedEffort(
-        option,
-        option?.defaultReasoningEffort ?? state.reasoningEffort,
-      ),
+      reasoningEffort: _supportedEffort(option, state.reasoningEffort),
       speedMode: option?.supportsFastMode == false ? 'normal' : state.speedMode,
     );
-    _persistSettings();
+    _persistConfiguration();
   }
 
   void setReasoning(String effort) {
     state = state.copyWith(
       reasoningEffort: _supportedEffort(state.selectedModelOption, effort),
     );
-    _persistSettings();
+    _persistConfiguration();
   }
 
   void setPermissionMode(String mode) {
-    state = state.copyWith(permissionMode: mode);
-    _persistSettings();
+    final permissionMode = mode == 'auto-review' && !state.supportsAutoReview
+        ? 'on-request'
+        : _supportedPermissionMode(mode);
+    state = state.copyWith(permissionMode: permissionMode);
+    _persistConfiguration();
   }
 
   void setSpeed(String mode) {
@@ -374,7 +361,7 @@ class CodexChatController extends _$CodexChatController {
           ? 'normal'
           : mode,
     );
-    _persistSettings();
+    _persistConfiguration();
   }
 
   void setPlanMode(bool enabled) {
@@ -386,20 +373,23 @@ class CodexChatController extends _$CodexChatController {
           ? null
           : state.collaborationMode,
     );
-    _persistSettings();
+    _persistConfiguration();
   }
 
   void setCollaborationMode(String? mode) {
     final normalized = mode?.trim();
-    if (normalized == null || normalized.isEmpty) return;
+    final nextMode = normalized == null || normalized.isEmpty
+        ? null
+        : normalized;
     state = state.copyWith(
-      collaborationMode: normalized,
-      planMode: normalized == 'plan',
+      collaborationMode: nextMode,
+      planMode: nextMode == 'plan',
     );
-    _persistSettings();
+    _persistConfiguration();
   }
 
-  void _persistSettings() {
+  void _persistConfiguration() {
+    _persistTabConfiguration();
     unawaited(
       ref
           .read(settingsControllerProvider.notifier)
@@ -416,6 +406,14 @@ class CodexChatController extends _$CodexChatController {
     );
   }
 
+  void _persistTabConfiguration() {
+    unawaited(
+      _host
+          .configureTab(tabId, _configurationPayload(state))
+          .catchError((_) => <String, Object?>{}),
+    );
+  }
+
   void removeQueuedMessage(int index) {
     if (index < 0 || index >= state.queuedMessages.length) return;
     final next = <CodexQueuedMessage>[...state.queuedMessages]..removeAt(index);
@@ -426,6 +424,7 @@ class CodexChatController extends _$CodexChatController {
     int index, {
     required String text,
     List<CodexInputAttachment> attachments = const <CodexInputAttachment>[],
+    List<CodexDraftItem> draftItems = const <CodexDraftItem>[],
   }) {
     if (index < 0 || index >= state.queuedMessages.length) return;
     final next = <CodexQueuedMessage>[...state.queuedMessages];
@@ -433,8 +432,11 @@ class CodexChatController extends _$CodexChatController {
       id: next[index].id,
       text: text.trim(),
       attachments: List<CodexInputAttachment>.unmodifiable(attachments),
+      draftItems: List<CodexDraftItem>.unmodifiable(draftItems),
     );
-    if (next[index].text.isEmpty && next[index].attachments.isEmpty) {
+    if (next[index].text.isEmpty &&
+        next[index].attachments.isEmpty &&
+        next[index].draftItems.isEmpty) {
       next.removeAt(index);
     }
     state = state.copyWith(queuedMessages: next);
@@ -444,36 +446,7 @@ class CodexChatController extends _$CodexChatController {
     state = state.copyWith(queuedMessages: const <CodexQueuedMessage>[]);
   }
 
-  void _onRuntimeEvent(RuntimeHostEvent event) {
-    if (event.name == 'codexServerChanged') {
-      if (!ref.mounted) return;
-      final status = event.payload['status']?.toString();
-      if (status == 'error') {
-        state = state.copyWith(
-          error: _safeError(event.payload['error'] ?? 'Codex server failed.'),
-        );
-      }
-      return;
-    }
-    if (event.name != 'codexThreadChanged') return;
-    if (event.payload['tabId'] != tabId) return;
-    final snapshot = event.payload['snapshot'];
-    if (snapshot is! Map) return;
-    final next = CodexChatSnapshot.fromJson(snapshot);
-    if (!ref.mounted) return;
-    if (!next.isBusy) _interruptSafetyTimer?.cancel();
-    state = state.copyWith(
-      snapshot: next,
-      sending: next.isBusy ? state.sending : false,
-      interrupting: next.isBusy ? state.interrupting : false,
-      error: null,
-    );
-    if (!next.isBusy && state.queuedMessages.isNotEmpty) {
-      final nextMessage = state.queuedMessages.first;
-      state = state.copyWith(
-        queuedMessages: state.queuedMessages.skip(1).toList(growable: false),
-      );
-      unawaited(_sendNow(nextMessage));
-    }
+  void _recordRequestError(Object error) {
+    state = state.copyWith(error: _safeError(error));
   }
 }

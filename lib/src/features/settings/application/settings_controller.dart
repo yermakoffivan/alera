@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:alera/src/features/ai_text_generation/domain/ai_text_generation_settings.dart';
+import 'package:alera/src/features/ai_dictation/domain/ai_dictation_settings.dart';
 import 'package:alera/src/features/settings/application/settings_providers.dart';
 import 'package:alera/src/features/settings/application/runtime_settings_changes.dart';
 import 'package:alera/src/features/agent_status/domain/agent_status.dart';
@@ -60,6 +61,14 @@ class SettingsController extends _$SettingsController {
 
   Future<void> updateAiTextGeneration(AiTextGenerationSettings settings) async {
     await _save(state.copyWith(aiTextGeneration: settings));
+  }
+
+  Future<void> updateAiDictation(AiDictationSettings settings) async {
+    await _save(state.copyWith(aiDictation: settings));
+  }
+
+  Future<void> resetAiDictation() async {
+    await _save(state.copyWith(aiDictation: AiDictationSettings.defaults));
   }
 
   Future<void> updateTextActions(TextActionsSettings settings) async {
@@ -148,6 +157,7 @@ class SettingsController extends _$SettingsController {
       AgentType.cursor => current.copyWith(cursor: value),
       AgentType.agy => current.copyWith(agy: value),
       AgentType.opencode => current.copyWith(opencode: value),
+      AgentType.opencode2 => current.copyWith(opencode2: value),
       AgentType.pi => current.copyWith(pi: value),
       AgentType.amp => current.copyWith(amp: value),
       AgentType.grok => current.copyWith(grok: value),
@@ -300,6 +310,17 @@ class SettingsController extends _$SettingsController {
   }) async {
     final current = state.agents.quotas.forHost(hostId);
     await _saveQuotaHost(hostId, current.copyWith(claudeDefaultEnabled: value));
+  }
+
+  Future<void> setClaudeDefaultShowInUsage({
+    required String hostId,
+    required bool value,
+  }) async {
+    final current = state.agents.quotas.forHost(hostId);
+    await _saveQuotaHost(
+      hostId,
+      current.copyWith(claudeDefaultShowInUsage: value),
+    );
   }
 
   Future<void> setSelectedClaudeQuotaProfile({

@@ -21,6 +21,7 @@ pub const RUNTIME_HOST_CAPABILITY: &str = "runtimeStore";
 pub const RUNTIME_HOST_BOOTSTRAP_CAPABILITY: &str = "sshTargetBootstrap";
 pub const RUNTIME_HOST_MANAGED_WORKSPACE_CAPABILITY: &str = "managedWorkspaceLifecycle";
 pub const RUNTIME_HOST_MOBILE_CAPABILITY: &str = "mobileCompanionAccess";
+pub const RUNTIME_HOST_MOBILE_NETBIRD_CAPABILITY: &str = "mobileNetBirdGatewayV1";
 // Advertised once mobile clients may call workspace mutations (pin, link,
 // create/remove managed, tab removal). Mobile apps feature-check this instead
 // of the strict-equality mobile protocol version.
@@ -37,6 +38,18 @@ pub const RUNTIME_HOST_MOBILE_HOST_TOOLS_CAPABILITY: &str = "mobileHostToolsV1";
 /// Advertised once authenticated mobile clients may stream prompt images into
 /// the runtime-owned image store for New Workspace From Prompt.
 pub const RUNTIME_HOST_MOBILE_PROMPT_IMAGE_UPLOAD_CAPABILITY: &str = "mobilePromptImageUploadV1";
+/// A paired phone can search and read bounded workspace files and list saved
+/// Codex prompts without receiving unrestricted host filesystem access.
+pub const RUNTIME_HOST_MOBILE_CODEX_WORKSPACE_FILES_CAPABILITY: &str =
+    "mobileCodexWorkspaceFilesV1";
+/// A paired phone can list, resume, reset, clear, and rename Codex threads.
+pub const RUNTIME_HOST_MOBILE_CODEX_SESSIONS_CAPABILITY: &str = "mobileCodexSessionsV1";
+/// A paired phone can upload bounded general files into the runtime-owned
+/// prompt attachment store using the same offset-checked chunking as images.
+pub const RUNTIME_HOST_MOBILE_PROMPT_FILE_UPLOAD_CAPABILITY: &str = "mobilePromptFileUploadV1";
+pub const RUNTIME_HOST_MOBILE_PROMPT_ATTACHMENT_READ_CAPABILITY: &str =
+    "mobilePromptAttachmentReadV1";
+pub const RUNTIME_HOST_AI_DICTATION_CAPABILITY: &str = "aiDictationV1";
 /// Desktop account management backed by the Alera cloud identity service.
 /// Account verbs remain unavailable to paired mobile clients.
 pub const RUNTIME_HOST_ACCOUNT_CAPABILITY: &str = "aleraAccountV1";
@@ -88,6 +101,7 @@ pub const RUNTIME_HOST_TERMINAL_DRIVER_CAPABILITY: &str = "terminalDriverPresenc
 // Advertised once callers can explicitly replace a terminal process while
 // preserving its handle and scrollback. Older hosts remain attachable.
 pub const RUNTIME_HOST_TERMINAL_RESTART_CAPABILITY: &str = "terminalRestartV1";
+pub const RUNTIME_HOST_TERMINAL_PULSE_CAPABILITY: &str = "terminalPulseV1";
 /// The client may ask, in its `hello`, to switch this connection to
 /// length-prefixed binary frames. Negotiated per client, so an older app and
 /// the `alera` CLI keep getting newline-delimited JSON from the same host.
@@ -138,6 +152,14 @@ pub const MOBILE_EMULATOR_TAB_KIND: &str = "mobileEmulator";
 /// Native Codex chat tabs are additive. Clients advertise support for the tab
 /// kind separately so an older client never attempts to decode it.
 pub const RUNTIME_HOST_CODEX_CHAT_CAPABILITY: &str = "codexChatTabV1";
+/// Codex goals are additive and bridged through the app-server thread goal API.
+pub const RUNTIME_HOST_CODEX_GOALS_CAPABILITY: &str = "codexGoalsV1";
+/// Native Codex session management is additive. Desktop clients negotiate it
+/// before exposing thread list, resume, new, and clear actions.
+pub const RUNTIME_HOST_CODEX_SESSIONS_CAPABILITY: &str = "codexSessionsV1";
+/// Codex turn requests accept the app-server's split approval reviewer and
+/// sandbox policy fields instead of relying on the legacy approval mode.
+pub const RUNTIME_HOST_CODEX_TURN_POLICY_CAPABILITY: &str = "codexTurnPolicyV2";
 pub const CODEX_TAB_KIND: &str = "codex";
 /// Version of the computer-use skill guide this binary's command surface matches.
 /// Reported by `alera version` so a stale installed skill is detectable.

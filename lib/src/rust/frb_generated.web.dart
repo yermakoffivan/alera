@@ -7,6 +7,7 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/agent_hooks.dart';
+import 'api/ai_dictation.dart';
 import 'api/clipboard.dart';
 import 'api/git.dart';
 import 'api/git_diff_blob.dart';
@@ -64,7 +65,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AgentHookEventDto dco_decode_agent_hook_event_dto(dynamic raw);
 
   @protected
+  AiDictationError dco_decode_ai_dictation_error(dynamic raw);
+
+  @protected
+  AiDictationErrorKind dco_decode_ai_dictation_error_kind(dynamic raw);
+
+  @protected
+  AiDictationRequest dco_decode_ai_dictation_request(dynamic raw);
+
+  @protected
+  AiDictationResult dco_decode_ai_dictation_result(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  AiDictationRequest dco_decode_box_autoadd_ai_dictation_request(dynamic raw);
 
   @protected
   GitChangeArea dco_decode_box_autoadd_git_change_area(dynamic raw);
@@ -125,6 +141,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WorkspaceSearchOptions dco_decode_box_autoadd_workspace_search_options(
     dynamic raw,
   );
+
+  @protected
+  CodexSavedPrompt dco_decode_codex_saved_prompt(dynamic raw);
+
+  @protected
+  CodexSavedPromptScope dco_decode_codex_saved_prompt_scope(dynamic raw);
 
   @protected
   GitChangeArea dco_decode_git_change_area(dynamic raw);
@@ -235,6 +257,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AgentHookEventDto> dco_decode_list_agent_hook_event_dto(dynamic raw);
+
+  @protected
+  List<CodexSavedPrompt> dco_decode_list_codex_saved_prompt(dynamic raw);
 
   @protected
   List<GitChangeEntry> dco_decode_list_git_change_entry(dynamic raw);
@@ -573,7 +598,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  AiDictationError sse_decode_ai_dictation_error(SseDeserializer deserializer);
+
+  @protected
+  AiDictationErrorKind sse_decode_ai_dictation_error_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AiDictationRequest sse_decode_ai_dictation_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  AiDictationResult sse_decode_ai_dictation_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  AiDictationRequest sse_decode_box_autoadd_ai_dictation_request(
+    SseDeserializer deserializer,
+  );
 
   @protected
   GitChangeArea sse_decode_box_autoadd_git_change_area(
@@ -646,6 +694,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WorkspaceSearchOptions sse_decode_box_autoadd_workspace_search_options(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  CodexSavedPrompt sse_decode_codex_saved_prompt(SseDeserializer deserializer);
+
+  @protected
+  CodexSavedPromptScope sse_decode_codex_saved_prompt_scope(
     SseDeserializer deserializer,
   );
 
@@ -780,6 +836,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AgentHookEventDto> sse_decode_list_agent_hook_event_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<CodexSavedPrompt> sse_decode_list_codex_saved_prompt(
     SseDeserializer deserializer,
   );
 
@@ -1212,7 +1273,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_ai_dictation_error(
+    AiDictationError self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ai_dictation_error_kind(
+    AiDictationErrorKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ai_dictation_request(
+    AiDictationRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ai_dictation_result(
+    AiDictationResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_ai_dictation_request(
+    AiDictationRequest self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_git_change_area(
@@ -1298,6 +1389,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_workspace_search_options(
     WorkspaceSearchOptions self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_codex_saved_prompt(
+    CodexSavedPrompt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_codex_saved_prompt_scope(
+    CodexSavedPromptScope self,
     SseSerializer serializer,
   );
 
@@ -1478,6 +1581,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_agent_hook_event_dto(
     List<AgentHookEventDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_codex_saved_prompt(
+    List<CodexSavedPrompt> self,
     SseSerializer serializer,
   );
 

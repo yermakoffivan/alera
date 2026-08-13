@@ -147,8 +147,13 @@ pub(super) fn new_cell(
     streaming: bool,
     metadata: Option<Value>,
 ) -> Value {
+    let item_id = id
+        .strip_prefix("item-")
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     json!({
         "id": id,
+        "itemId": item_id,
         "turnId": if turn_id.is_empty() { Value::Null } else { Value::String(turn_id.to_string()) },
         "kind": kind,
         "status": status,
@@ -166,13 +171,14 @@ pub(super) fn new_cell(
 }
 
 pub(super) fn upsert_cell(cells: &mut Vec<Value>, next: Value) {
-    let Some(id) = next.get("id").and_then(Value::as_str) else {
+    let Some(id) = next.get("id").and_then(Value::as_str).map(str::to_string) else {
         return;
     };
-    let Some(index) = cells
+    let index = cells
         .iter()
-        .position(|cell| cell.get("id").and_then(Value::as_str) == Some(id))
-    else {
+        .position(|cell| cell.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        .or_else(|| provisional_cell_index(cells, &next));
+    let Some(index) = index else {
         cells.push(next);
         return;
     };
@@ -183,12 +189,13 @@ pub(super) fn upsert_cell(cells: &mut Vec<Value>, next: Value) {
         return;
     };
     for key in [
+        "id",
+        "itemId",
         "turnId",
         "kind",
         "status",
         "updatedAt",
         "isStreaming",
-        "isCollapsed",
         "title",
         "subtitle",
         "markdownText",
@@ -207,6 +214,70 @@ pub(super) fn upsert_cell(cells: &mut Vec<Value>, next: Value) {
         metadata.extend(incoming.clone());
     }
     existing.insert("metadata".to_string(), Value::Object(metadata));
+}
+
+fn provisional_cell_index(cells: &[Value], next: &Value) -> Option<usize> {
+    next.get("itemId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    let turn_id = next
+        .get("turnId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    let kind = next
+        .get("kind")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    provisional_cell_ids(kind, turn_id)
+        .into_iter()
+        .find_map(|provisional_id| {
+            cells.iter().position(|cell| {
+                cell.get("id").and_then(Value::as_str) == Some(provisional_id.as_str())
+                    && cell.get("itemId").and_then(Value::as_str).is_none()
+            })
+        })
+}
+
+pub(super) fn provisional_cell_ids(kind: &str, turn_id: &str) -> Vec<String> {
+    let mut ids = vec![format!("{kind}-{turn_id}")];
+    if kind == "assistantMessage" {
+        ids.push(format!("assistant-{turn_id}"));
+    }
+    ids
+}
+
+pub(super) fn complete_context_compaction(cells: &mut Vec<Value>, turn_id: &str, now: &str) {
+    if let Some(cell) = cells.iter_mut().rev().find(|cell| {
+        cell.get("turnId").and_then(Value::as_str) == Some(turn_id)
+            && cell
+                .pointer("/metadata/itemType")
+                .and_then(Value::as_str)
+                .is_some_and(|item_type| item_type.eq_ignore_ascii_case("contextCompaction"))
+    }) {
+        if let Some(map) = cell.as_object_mut() {
+            map.insert("title".to_string(), Value::String("Compacted".to_string()));
+            map.insert("status".to_string(), Value::String("completed".to_string()));
+            map.insert("isStreaming".to_string(), Value::Bool(false));
+            map.insert("updatedAt".to_string(), Value::String(now.to_string()));
+        }
+        return;
+    }
+    upsert_cell(
+        cells,
+        new_cell(
+            &format!("compaction-{turn_id}"),
+            turn_id,
+            "toolCall",
+            "completed",
+            now,
+            Some("Compacted".to_string()),
+            None,
+            None,
+            None,
+            false,
+            Some(json!({"itemType": "contextCompaction"})),
+        ),
+    );
 }
 
 pub(super) fn cell_by_id<'a>(cells: &'a [Value], id: &str) -> Option<&'a Value> {
@@ -237,7 +308,19 @@ pub(super) fn kind_for(item_type: &str, method: &str) -> &'static str {
         "subAgent"
     } else if item_type.contains("plan") || method.contains("/plan") {
         "plan"
-    } else if item_type.contains("tool") || method.contains("tool") || method == "output" {
+    } else if item_type.contains("websearch")
+        || item_type.contains("dynamictool")
+        || item_type.contains("imageview")
+        || item_type.contains("imagegeneration")
+        || item_type.contains("sleep")
+        || item_type.contains("contextcompaction")
+        || item_type.contains("enteredreview")
+        || item_type.contains("exitedreview")
+        || item_type.contains("extension")
+        || item_type.contains("tool")
+        || method.contains("tool")
+        || method == "output"
+    {
         "toolCall"
     } else {
         "progressText"
@@ -263,6 +346,28 @@ pub(super) fn title_for(item_type: &str, method: &str) -> String {
         || method.contains("collab")
     {
         return "Sub-agent".to_string();
+    }
+    if item_type.contains("websearch") {
+        return "Web search".to_string();
+    }
+    if item_type.contains("imageview") {
+        return "Viewed image".to_string();
+    }
+    if item_type.contains("imagegeneration") {
+        return "Generated image".to_string();
+    }
+    if item_type.contains("contextcompaction") {
+        return if method.contains("completed") {
+            "Compacted".to_string()
+        } else {
+            "Compacting".to_string()
+        };
+    }
+    if item_type.contains("enteredreview") {
+        return "Entered review mode".to_string();
+    }
+    if item_type.contains("exitedreview") {
+        return "Exited review mode".to_string();
     }
     if item_type.contains("tool") || method.contains("tool") {
         return "Tool call".to_string();
