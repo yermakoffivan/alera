@@ -15,6 +15,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
+#[path = "terminal_host_headless_runtime/profile_snapshot_restart_cases.rs"]
+mod profile_snapshot_restart_cases;
 #[path = "terminal_host_headless_runtime/startup_command_cases.rs"]
 mod startup_command_cases;
 

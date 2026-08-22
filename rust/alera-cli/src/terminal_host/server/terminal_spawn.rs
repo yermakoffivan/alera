@@ -17,7 +17,7 @@ use super::terminal_startup_commands::{
     agent_profile_id, auto_close_setup_command, auto_closes_on_success,
     delivers_initial_command_once, delivers_initial_prompt_once, initial_command,
     initial_delivery_mechanism, initial_managed_agent_launch, initial_prompt, pending_agent_type,
-    replays_initial_prompt_on_restart, tab_agent_type, terminal_session_id,
+    tab_agent_type, terminal_session_id,
 };
 use super::{ServerActor, ServerCommand};
 
@@ -196,42 +196,6 @@ impl ServerActor {
             }
         }
         Ok(rearmed)
-    }
-
-    async fn rearm_terminal_after_ready_prompt(
-        &mut self,
-        tab: &WorkspaceTabRecord,
-    ) -> HostResult<Option<WorkspaceTabRecord>> {
-        if !replays_initial_prompt_on_restart(tab)?
-            || initial_delivery_mechanism(tab)?
-                != Some(AgentInitialDeliveryMechanismV1::TerminalAfterReady)
-            || tab
-                .payload
-                .get("pendingAgentPrompt")
-                .is_some_and(|value| !value.is_null())
-        {
-            return Ok(None);
-        }
-        let Some(prompt) = initial_prompt(tab) else {
-            return Ok(None);
-        };
-        let Some(agent_type) = tab_agent_type(tab) else {
-            return Ok(None);
-        };
-        let mut next = tab.clone();
-        let Some(payload) = next.payload.as_object_mut() else {
-            return Ok(None);
-        };
-        payload.insert(
-            "pendingAgentPrompt".to_string(),
-            serde_json::json!({"agent": agent_type, "prompt": prompt}),
-        );
-        next.updated_at = chrono::Utc::now();
-        self.runtime_store
-            .upsert_workspace_tab(next)
-            .await
-            .map(Some)
-            .map_err(|error| HostError::state(error.to_string()))
     }
 
     /// Rewrites a launch so the agent reads its prompt from stdin.
