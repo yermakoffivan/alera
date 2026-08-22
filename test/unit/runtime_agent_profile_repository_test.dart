@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 part 'runtime_agent_profile_repository_revision_cases.dart';
+part 'runtime_agent_profile_repository_removal_cases.dart';
 
 void main() {
   group('AgentProfile', () {
@@ -198,6 +199,7 @@ void main() {
     });
 
     _registerAgentProfileRevisionRepositoryTests();
+    _registerAgentProfileRemovalRepositoryTests();
 
     test('controller clone reuses all profile fields without its id', () async {
       final client = _FakeRuntimeHostClient();
