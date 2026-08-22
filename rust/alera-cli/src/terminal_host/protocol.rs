@@ -89,6 +89,10 @@ pub const RUNTIME_HOST_MANAGED_AGENT_PROFILES_CAPABILITY: &str =
 pub const RUNTIME_HOST_AI_TEXT_WORKSPACE_IDENTITY_CAPABILITY: &str = "aiTextWorkspaceIdentityV1";
 pub const RUNTIME_HOST_AI_TEXT_SPEECH_MESSAGE_CAPABILITY: &str = "aiTextSpeechMessageV1";
 pub const RUNTIME_HOST_AGENT_PROFILE_PROMPT_LAUNCH_CAPABILITY: &str = "agentProfilePromptLaunchV1";
+/// `agentProfile.launch` accepts a stable client mutation id and durably
+/// replays its result for the same authenticated caller and workspace.
+pub const RUNTIME_HOST_AGENT_PROFILE_LAUNCH_IDEMPOTENCY_CAPABILITY: &str =
+    "agentProfileLaunchIdempotencyV1";
 // Advertised once runs carry a user-approved execution policy. A run without a
 // policy schedules exactly as before, so this stays a feature check.
 pub const RUNTIME_HOST_RUN_POLICY_CAPABILITY: &str = "orchestrationRunPolicyV1";

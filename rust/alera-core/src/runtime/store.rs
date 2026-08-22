@@ -1078,10 +1078,16 @@ impl RuntimeStore {
     }
 
     pub async fn remove_workspace_tab(&self, tab_id: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM workspaceTabs WHERE id = ?")
             .bind(tab_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM agentProfileLaunchReceipts WHERE tabId = ?")
+            .bind(tab_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 

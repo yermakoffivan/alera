@@ -51,6 +51,7 @@ class PromptWorkspaceDialog extends StatefulWidget {
     required this.cancelGeneration,
     required this.createWorkspace,
     required this.launchAgent,
+    required this.supportsIdempotentAgentLaunch,
     this.clipboard = const NativePromptWorkspaceClipboard(),
     this.initialProject,
     this.defaultAgentProfileId,
@@ -84,8 +85,11 @@ class PromptWorkspaceDialog extends StatefulWidget {
     required String workspaceId,
     required String profileId,
     required String prompt,
+    required String clientMutationId,
+    required bool requireIdempotency,
   })
   launchAgent;
+  final Future<bool> Function() supportsIdempotentAgentLaunch;
   final PromptWorkspaceClipboard clipboard;
   final String? defaultAgentProfileId;
   final Future<void> Function({
@@ -113,6 +117,8 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
   String? _error;
   WorkspaceCreationResult? _created;
   String? _activeOperationId;
+  String? _agentLaunchMutationId;
+  bool? _originalAgentLaunchWasIdempotent;
   bool _createAnother = false;
 
   @override
@@ -245,6 +251,8 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
       _error = null;
       _phase = 'Generating workspace identity';
     });
+    _agentLaunchMutationId = null;
+    _originalAgentLaunchWasIdempotent = null;
     try {
       WorkspaceCreationResult? creation;
       Object? collisionError;
@@ -308,15 +316,26 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
         return;
       }
       setState(() => _phase = 'Starting agent');
+      final clientMutationId = _agentLaunchMutationId ??= const Uuid().v4();
+      // The first request uses the capability-specific verb. If the runtime
+      // explicitly falls back to an old host, the result (or wrapped failure)
+      // changes this to false before a retry can be offered.
+      _originalAgentLaunchWasIdempotent ??= true;
       final launch = await widget.launchAgent(
         workspaceId: creation.workspace.id,
         profileId: profile.id,
         prompt: prompt,
+        clientMutationId: clientMutationId,
+        requireIdempotency: false,
       );
+      _originalAgentLaunchWasIdempotent = launch.idempotent;
       if (mounted) {
         await _finishCreation(creation, launch.tabId);
       }
     } catch (error) {
+      if (error is NonIdempotentAgentLaunchFailure) {
+        _originalAgentLaunchWasIdempotent = false;
+      }
       if (mounted) {
         setState(() {
           _working = false;
@@ -353,10 +372,27 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
       _error = null;
     });
     try {
+      final currentHostSupportsIdempotency = await widget
+          .supportsIdempotentAgentLaunch();
+      if (!mounted) {
+        return;
+      }
+      if (_originalAgentLaunchWasIdempotent != true ||
+          !currentHostSupportsIdempotency) {
+        throw UnsupportedError(
+          'Update Alera on this host before retrying agent launch safely.',
+        );
+      }
+      final clientMutationId = _agentLaunchMutationId;
+      if (clientMutationId == null) {
+        throw StateError('The original agent launch identity is unavailable.');
+      }
       final launch = await widget.launchAgent(
         workspaceId: creation.workspace.id,
         profileId: profile.id,
         prompt: prompt,
+        clientMutationId: clientMutationId,
+        requireIdempotency: true,
       );
       if (mounted) {
         await _finishCreation(creation, launch.tabId);
@@ -390,6 +426,8 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
       return;
     }
     _promptController.clear();
+    _agentLaunchMutationId = null;
+    _originalAgentLaunchWasIdempotent = null;
     setState(() {
       _working = false;
       _phase = null;
@@ -477,9 +515,9 @@ class _PromptWorkspaceDialogState extends State<PromptWorkspaceDialog> {
         Align(
           alignment: Alignment.centerRight,
           child: FilledButton(
-            onPressed: () => Navigator.of(
-              context,
-            ).pop(const PromptWorkspaceDialogResult(openManual: true)),
+            onPressed: () =>
+                Navigator.of(context)
+                    .pop(const PromptWorkspaceDialogResult(openManual: true)),
             child: const Text('Continue Manually'),
           ),
         ),
