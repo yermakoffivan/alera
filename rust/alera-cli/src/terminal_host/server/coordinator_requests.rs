@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::terminal_host::host_error::{HostError, HostResult};
 use crate::terminal_host::orchestration::agent_presence::AgentPresenceState;
+use crate::terminal_host::orchestration::agent_profile_launch_snapshot::AGENT_PROFILE_LAUNCH_SNAPSHOT_KEY;
 use crate::terminal_host::orchestration::agent_registry::adapter_for;
 use crate::terminal_host::orchestration::coordinator_loop::{
     acceptance_timeout_threshold_iso, hung_dispatch_threshold_iso, CoordinatorConfig,
@@ -667,10 +668,19 @@ impl ServerActor {
                 let fallback_id = tab.id;
                 let created_at = tab.created_at;
                 let payload = tab.payload.as_object()?;
+                let snapshot_worker = payload.contains_key(AGENT_PROFILE_LAUNCH_SNAPSHOT_KEY)
+                    && payload
+                        .get("orchestrationSpawn")
+                        .and_then(Value::as_object)
+                        .and_then(|spawn| spawn.get("owned"))
+                        .and_then(Value::as_bool)
+                        == Some(true);
                 let is_spawned_worker = payload.get("spawnOnCreate").and_then(Value::as_bool)
                     == Some(true)
-                    && payload.get("initialCommand").and_then(Value::as_str)
-                        == adapter_for(&config.agent_type).map(|adapter| adapter.default_command);
+                    && (snapshot_worker
+                        || payload.get("initialCommand").and_then(Value::as_str)
+                            == adapter_for(&config.agent_type)
+                                .map(|adapter| adapter.default_command));
                 if !is_spawned_worker {
                     return None;
                 }

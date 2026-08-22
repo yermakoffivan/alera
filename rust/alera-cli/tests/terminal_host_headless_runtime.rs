@@ -169,11 +169,30 @@ fn hook_endpoint(runtime_dir: &std::path::Path) -> (u16, String) {
 
 #[cfg(unix)]
 fn post_hook(runtime_dir: &std::path::Path, agent: &str, event_name: &str) {
+    post_hook_for_terminal(
+        runtime_dir,
+        agent,
+        event_name,
+        "hook-session",
+        "hook-workspace",
+        "hook-tab",
+    );
+}
+
+#[cfg(unix)]
+fn post_hook_for_terminal(
+    runtime_dir: &std::path::Path,
+    agent: &str,
+    event_name: &str,
+    session_id: &str,
+    workspace_id: &str,
+    tab_id: &str,
+) {
     let (port, token) = hook_endpoint(runtime_dir);
     let body = serde_json::to_string(&json!({
-        "terminalSessionId": "hook-session",
-        "workspaceId": "hook-workspace",
-        "tabId": "hook-tab",
+        "terminalSessionId": session_id,
+        "workspaceId": workspace_id,
+        "tabId": tab_id,
         "hookEventName": event_name,
         "payload": {"prompt": format!("{agent} is working")}
     }))

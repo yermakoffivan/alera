@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use super::{connect, read_response, send, spawn_host, workspace_payload};
+use super::{connect, post_hook_for_terminal, read_response, send, spawn_host, workspace_payload};
 
 #[test]
 #[cfg(unix)]
@@ -196,6 +196,348 @@ fn amp_receives_its_initial_prompt_on_standard_input() {
     assert_eq!(recorded, "- Review the plan\n- It's ready", "{recorded}");
 }
 
+#[test]
+#[cfg(unix)]
+fn profile_snapshot_restores_after_the_profile_is_edited_and_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("profile-restarts.txt");
+    let recorder = write_recorder(
+        dir.path(),
+        "record-profile-restart.sh",
+        &format!("printf X >> {}; sleep 30", marker.display()),
+    );
+    let token = "profile-snapshot-restart-token";
+    let (guard, port) = spawn_host(dir.path(), token);
+    let (mut writer, mut reader) = connect(port, token);
+
+    send(
+        &mut writer,
+        json!({"id": 10, "type": "project.upsert", "payload": {
+            "id": "project-1", "name": "Snapshot Project",
+            "repoPath": dir.path().to_string_lossy(), "kind": "folder",
+            "createdAt": "2026-08-22T00:00:00Z", "updatedAt": "2026-08-22T00:00:00Z"
+        }}),
+    );
+    assert_eq!(read_response(&mut reader, 10)["ok"], json!(true));
+    send(
+        &mut writer,
+        json!({"id": 1, "type": "workspace.upsert", "payload": workspace_payload("snapshot-workspace", dir.path())}),
+    );
+    assert_eq!(read_response(&mut reader, 1)["ok"], json!(true));
+    send(
+        &mut writer,
+        json!({"id": 2, "type": "agentProfile.upsert", "payload": {
+            "name": "Stable Profile", "agentType": "codex",
+            "command": recorder.to_string_lossy()
+        }}),
+    );
+    let created = read_response(&mut reader, 2);
+    assert_eq!(created["ok"], json!(true));
+    let profile_id = created["payload"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["payload"]["revision"], json!(0));
+    send(
+        &mut writer,
+        json!({"id": 3, "type": "agentProfile.launchIdempotent", "payload": {
+            "workspaceId": "snapshot-workspace", "profileId": profile_id,
+            "prompt": "Start the work", "clientMutationId": "snapshot-launch-1"
+        }}),
+    );
+    let launched = read_response(&mut reader, 3);
+    assert_eq!(launched["ok"], json!(true), "{launched}");
+    let launch = &launched["payload"]["tab"]["payload"]["agentProfileLaunchV1"];
+    assert_eq!(launch["version"], json!(1));
+    assert_eq!(launch["profile"]["id"], profile_id);
+    assert_eq!(launch["profile"]["revision"], json!(0));
+    assert_eq!(launch["launch"]["kind"], json!("command"));
+    assert_eq!(
+        launch["launch"]["command"],
+        json!(recorder.to_string_lossy())
+    );
+    assert_eq!(
+        launched["payload"]["tab"]["payload"].get("initialCommand"),
+        None
+    );
+    assert!(launched["payload"]["tab"]["payload"]
+        .get("initialPrompt")
+        .is_none());
+    assert!(launched["payload"]["tab"]["payload"]
+        .get("pendingAgentPrompt")
+        .is_none());
+    let tab_id = launched["payload"]["tab"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    send(
+        &mut writer,
+        json!({"id": 30, "type": "agentProfile.launchIdempotent", "payload": {
+            "workspaceId": "snapshot-workspace", "profileId": profile_id,
+            "prompt": "Start the work", "clientMutationId": "snapshot-launch-1"
+        }}),
+    );
+    let replayed = read_response(&mut reader, 30);
+    assert_eq!(replayed["ok"], json!(true), "{replayed}");
+    assert_eq!(replayed["payload"], launched["payload"]);
+    wait_for_file(&marker);
+
+    send(
+        &mut writer,
+        json!({"id": 4, "type": "agentProfile.upsert", "payload": {
+            "id": profile_id, "name": "Edited Profile", "agentType": "claude",
+            "command": "claude --dangerously-skip-permissions", "expectedRevision": 0
+        }}),
+    );
+    let edited = read_response(&mut reader, 4);
+    assert_eq!(edited["ok"], json!(true));
+    assert_eq!(edited["payload"]["revision"], json!(1));
+    send(
+        &mut writer,
+        json!({"id": 5, "type": "agentProfile.removalImpact", "payload": {
+            "id": profile_id, "expectedRevision": 1
+        }}),
+    );
+    let impact = read_response(&mut reader, 5);
+    assert_eq!(impact["ok"], json!(true), "{impact}");
+    assert_eq!(impact["payload"]["tabs"][0]["tabId"], tab_id);
+    send(
+        &mut writer,
+        json!({"id": 6, "type": "agentProfile.remove", "payload": {
+            "id": profile_id, "expectedRevision": 1, "confirmed": true
+        }}),
+    );
+    let blocked_remove = read_response(&mut reader, 6);
+    assert_eq!(blocked_remove["ok"], json!(false), "{blocked_remove}");
+
+    drop(reader);
+    drop(writer);
+    drop(guard);
+    std::fs::remove_file(dir.path().join("runtime-host.json")).unwrap();
+
+    // Reference-aware removal correctly blocks deleting a live snapshot tab.
+    // Delete the mutable catalog row directly to model recovery of a tab
+    // created by an older build whose profile is no longer present.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let store = alera_core::runtime::RuntimeStore::open(dir.path())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM agentProfiles WHERE id = ?")
+            .bind(&profile_id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    });
+
+    let (_restarted_guard, restarted_port) = spawn_host(dir.path(), token);
+    let (_restarted_writer, _restarted_reader) = connect(restarted_port, token);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let contents = std::fs::read_to_string(&marker).unwrap_or_default();
+        if contents == "XX" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "snapshot launch was not restored after profile deletion: {contents:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn orchestration_fx_rearms_its_bootstrap_once_per_restarted_pty() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("fx-bootstrap.txt");
+    let ready = dir.path().join("fx-ready.txt");
+    let recorder = write_recorder(
+        dir.path(),
+        "record-fx-bootstrap.sh",
+        &format!(
+            "printf ready > {}; cat >> {}",
+            ready.display(),
+            marker.display()
+        ),
+    );
+    let token = "fx-bootstrap-restart-token";
+    let (guard, port) = spawn_host(dir.path(), token);
+    let (mut writer, mut reader) = connect(port, token);
+
+    send(
+        &mut writer,
+        json!({"id": 10, "type": "project.upsert", "payload": {
+            "id": "project-1", "name": "fx Restart Project",
+            "repoPath": dir.path().to_string_lossy(), "kind": "folder",
+            "createdAt": "2026-08-22T00:00:00Z", "updatedAt": "2026-08-22T00:00:00Z"
+        }}),
+    );
+    assert_eq!(read_response(&mut reader, 10)["ok"], json!(true));
+    send(
+        &mut writer,
+        json!({"id": 1, "type": "workspace.upsert", "payload": workspace_payload("fx-workspace", dir.path())}),
+    );
+    assert_eq!(read_response(&mut reader, 1)["ok"], json!(true));
+    send(
+        &mut writer,
+        json!({"id": 2, "type": "agentProfile.upsert", "payload": {
+            "name": "fx Restart", "agentType": "fx",
+            "command": recorder.to_string_lossy()
+        }}),
+    );
+    assert_eq!(read_response(&mut reader, 2)["ok"], json!(true));
+    send(
+        &mut writer,
+        json!({"id": 3, "type": "orchestration.taskCreate", "payload": {
+            "spec": "verify fx restart delivery", "workspace": "fx-workspace",
+            "coordinator": "coordinator", "createdBy": "coordinator"
+        }}),
+    );
+    let task = read_response(&mut reader, 3);
+    assert_eq!(task["ok"], json!(true), "{task}");
+    let task_id = task["payload"]["id"].as_str().unwrap();
+    send(
+        &mut writer,
+        json!({"id": 4, "type": "orchestration.agentSpawn", "payload": {
+            "workspace": "fx-workspace", "profile": "fx Restart",
+            "task": task_id, "from": "coordinator"
+        }}),
+    );
+    let spawned = read_response(&mut reader, 4);
+    assert_eq!(spawned["ok"], json!(true), "{spawned}");
+    let session_id = spawned["payload"]["terminalHandle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    wait_for_file(&ready);
+    post_hook_for_terminal(
+        dir.path(),
+        "fx",
+        "Idle",
+        &session_id,
+        "fx-workspace",
+        &session_id,
+    );
+    wait_for_occurrences(
+        &marker,
+        "You have an active Alera orchestration dispatch",
+        1,
+    );
+    // Model a failed pending-clear write by restoring the consumed durable
+    // value. The PTY-instance guard must still reject another ready event.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let store = alera_core::runtime::RuntimeStore::open(dir.path())
+            .await
+            .unwrap();
+        let mut tab = store
+            .find_workspace_tab(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let prompt = tab.payload["initialPrompt"].clone();
+        tab.payload["pendingAgentPrompt"] = json!({"agent": "fx", "prompt": prompt});
+        store.upsert_workspace_tab(tab).await.unwrap();
+    });
+    post_hook_for_terminal(
+        dir.path(),
+        "fx",
+        "Idle",
+        &session_id,
+        "fx-workspace",
+        &session_id,
+    );
+    // Two 500ms deferred-submit windows plus margin: a duplicate accepted by
+    // the PTY queue must have reached the recorder before this assertion.
+    std::thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(
+        occurrence_count(&marker, "You have an active Alera orchestration dispatch"),
+        1,
+        "the same PTY received its bootstrap twice"
+    );
+    runtime.block_on(async {
+        let store = alera_core::runtime::RuntimeStore::open(dir.path())
+            .await
+            .unwrap();
+        let mut tab = store
+            .find_workspace_tab(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        tab.payload["pendingAgentPrompt"] = serde_json::Value::Null;
+        store.upsert_workspace_tab(tab).await.unwrap();
+    });
+
+    send(
+        &mut writer,
+        json!({"id": 5, "type": "tab.find", "payload": {"id": session_id}}),
+    );
+    let projected = read_response(&mut reader, 5);
+    assert!(projected["payload"]["payload"]
+        .get("initialPrompt")
+        .is_none());
+    assert!(projected["payload"]["payload"]
+        .get("pendingAgentPrompt")
+        .is_none());
+
+    drop(reader);
+    drop(writer);
+    drop(guard);
+    std::fs::remove_file(dir.path().join("runtime-host.json")).unwrap();
+    std::fs::remove_file(&ready).unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let store = alera_core::runtime::RuntimeStore::open(dir.path())
+            .await
+            .unwrap();
+        let tab = store
+            .find_workspace_tab(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(tab.payload["initialPrompt"]
+            .as_str()
+            .unwrap()
+            .contains("active Alera orchestration dispatch"));
+        assert!(tab.payload["pendingAgentPrompt"].is_null());
+        assert_eq!(
+            tab.payload["agentProfileLaunchV1"]["initialDelivery"]["replay"],
+            "onRestart"
+        );
+    });
+
+    let (_restarted_guard, restarted_port) = spawn_host(dir.path(), token);
+    let (_restarted_writer, _restarted_reader) = connect(restarted_port, token);
+    wait_for_file(&ready);
+    post_hook_for_terminal(
+        dir.path(),
+        "fx",
+        "Idle",
+        &session_id,
+        "fx-workspace",
+        &session_id,
+    );
+    wait_for_occurrences(
+        &marker,
+        "You have an active Alera orchestration dispatch",
+        2,
+    );
+    post_hook_for_terminal(
+        dir.path(),
+        "fx",
+        "Idle",
+        &session_id,
+        "fx-workspace",
+        &session_id,
+    );
+    std::thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(
+        occurrence_count(&marker, "You have an active Alera orchestration dispatch"),
+        2,
+        "the restarted PTY received its bootstrap twice"
+    );
+}
+
 #[cfg(unix)]
 fn write_recorder(directory: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -221,6 +563,31 @@ fn wait_for_file(path: &std::path::Path) -> String {
             Instant::now() < deadline,
             "{} was never written",
             path.display()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(unix)]
+fn occurrence_count(path: &std::path::Path, needle: &str) -> usize {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .matches(needle)
+        .count()
+}
+
+#[cfg(unix)]
+fn wait_for_occurrences(path: &std::path::Path, needle: &str, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let actual = occurrence_count(path, needle);
+        if actual >= expected {
+            assert_eq!(actual, expected, "bootstrap was delivered too many times");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} bootstrap deliveries, observed {actual}"
         );
         std::thread::sleep(Duration::from_millis(25));
     }

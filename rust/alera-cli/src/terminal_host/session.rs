@@ -114,6 +114,9 @@ pub struct DurableOutputBatch {
 /// state transitions run in its owning server actor, so no locks are required.
 pub struct Session {
     instance_id: u64,
+    /// Set after this PTY instance accepts its initial after-ready prompt.
+    /// Persistence failure must not make a repeated ready event queue it again.
+    pub(super) initial_agent_prompt_delivered: bool,
     pub id: String,
     pub workspace_id: String,
     pub tab_id: String,
@@ -209,6 +212,7 @@ impl Session {
         title_tracker.feed(initial_scrollback);
         let mut session = Session {
             instance_id: next_session_instance_id(),
+            initial_agent_prompt_delivered: false,
             id,
             workspace_id,
             tab_id,

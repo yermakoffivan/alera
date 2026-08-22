@@ -3,9 +3,10 @@ use serde_json::Value;
 
 use crate::agent_status::prepare_launch_environment;
 use crate::terminal_host::host_error::{HostError, HostResult};
-use crate::terminal_host::orchestration::agent_registry::{adapter_for, AgentStartupPrompt};
+use crate::terminal_host::orchestration::agent_profile_launch_snapshot::AgentInitialDeliveryMechanismV1;
+use crate::terminal_host::orchestration::agent_registry::adapter_for;
 use crate::terminal_host::orchestration::agent_startup_command::{
-    append_initial_prompt_argument, command_with_initial_prompt,
+    append_initial_prompt_argument_for, command_with_initial_prompt_for,
 };
 use crate::terminal_host::protocol::TerminalHostLaunch;
 use crate::terminal_host::session::{PtyWriteCompletion, Session};
@@ -13,9 +14,10 @@ use crate::terminal_host::session::{PtyWriteCompletion, Session};
 use super::pty_event_forwarder::forward_pty_event;
 use super::terminal_launch_defaults::default_terminal_launch;
 use super::terminal_startup_commands::{
-    auto_close_setup_command, auto_closes_on_success, delivers_initial_command_once,
-    delivers_initial_prompt_once, initial_command, initial_managed_agent_launch, initial_prompt,
-    pending_agent_type, tab_agent_type, terminal_session_id,
+    agent_profile_id, auto_close_setup_command, auto_closes_on_success,
+    delivers_initial_command_once, delivers_initial_prompt_once, initial_command,
+    initial_delivery_mechanism, initial_managed_agent_launch, initial_prompt, pending_agent_type,
+    replays_initial_prompt_on_restart, tab_agent_type, terminal_session_id,
 };
 use super::{ServerActor, ServerCommand};
 
@@ -91,6 +93,8 @@ impl ServerActor {
         if self.sessions.get(&session_id).is_some_and(Session::running) {
             return Ok(None);
         }
+        let rearmed = self.rearm_terminal_after_ready_prompt(tab).await?;
+        let tab = rearmed.as_ref().unwrap_or(tab);
         let workspace = self
             .runtime_store
             .find_workspace(&tab.workspace_id)
@@ -128,13 +132,15 @@ impl ServerActor {
         let managed_launch = initial_managed_agent_launch(tab)?;
         let prompt = initial_prompt(tab);
         // Which shape the prompt takes is the agent's business, and only the
-        // adapter knows it. An unknown agent type leaves the launch bare rather
-        // than guessing a flag the CLI would reject.
+        // launch snapshot or, for a legacy tab, the adapter knows it. An unknown
+        // legacy agent type leaves the launch bare rather than guessing a flag.
         let adapter = tab_agent_type(tab).and_then(adapter_for);
-        let prompt_arguments = adapter.zip(prompt.as_deref());
+        let delivery = initial_delivery_mechanism(tab)?
+            .or_else(|| adapter.map(|value| value.startup_prompt.into()));
+        let prompt_arguments = delivery.as_ref().zip(prompt.as_deref());
         let command = if let Some(mut launch) = managed_launch {
-            if let Some((adapter, prompt)) = prompt_arguments {
-                append_initial_prompt_argument(adapter, &mut launch.arguments, prompt);
+            if let Some((mechanism, prompt)) = prompt_arguments {
+                append_initial_prompt_argument_for(mechanism, &mut launch.arguments, prompt);
             }
             Some(
                 crate::terminal_host::orchestration::managed_launch_shell_rendering::render_managed_launch(
@@ -143,11 +149,11 @@ impl ServerActor {
                 ),
             )
         } else {
-            initial_command(tab).map(|command| {
+            initial_command(tab)?.map(|command| {
                 let command = prompt_arguments
-                    .map(|(adapter, prompt)| {
-                        command_with_initial_prompt(
-                            adapter,
+                    .map(|(mechanism, prompt)| {
+                        command_with_initial_prompt_for(
+                            mechanism,
                             &command,
                             prompt,
                             &default_launch.interactive_shell,
@@ -162,9 +168,7 @@ impl ServerActor {
             })
         };
         let command = match (prompt_arguments, command) {
-            (Some((adapter, prompt)), Some(command))
-                if adapter.startup_prompt == AgentStartupPrompt::StdinScript =>
-            {
+            (Some((AgentInitialDeliveryMechanismV1::StdinScript, prompt)), Some(command)) => {
                 Some(self.stdin_prompt_command(&session_id, &command, prompt))
             }
             (_, command) => command,
@@ -191,7 +195,43 @@ impl ServerActor {
                 return Ok(self.clear_initial_prompt(tab).await);
             }
         }
-        Ok(None)
+        Ok(rearmed)
+    }
+
+    async fn rearm_terminal_after_ready_prompt(
+        &mut self,
+        tab: &WorkspaceTabRecord,
+    ) -> HostResult<Option<WorkspaceTabRecord>> {
+        if !replays_initial_prompt_on_restart(tab)?
+            || initial_delivery_mechanism(tab)?
+                != Some(AgentInitialDeliveryMechanismV1::TerminalAfterReady)
+            || tab
+                .payload
+                .get("pendingAgentPrompt")
+                .is_some_and(|value| !value.is_null())
+        {
+            return Ok(None);
+        }
+        let Some(prompt) = initial_prompt(tab) else {
+            return Ok(None);
+        };
+        let Some(agent_type) = tab_agent_type(tab) else {
+            return Ok(None);
+        };
+        let mut next = tab.clone();
+        let Some(payload) = next.payload.as_object_mut() else {
+            return Ok(None);
+        };
+        payload.insert(
+            "pendingAgentPrompt".to_string(),
+            serde_json::json!({"agent": agent_type, "prompt": prompt}),
+        );
+        next.updated_at = chrono::Utc::now();
+        self.runtime_store
+            .upsert_workspace_tab(next)
+            .await
+            .map(Some)
+            .map_err(|error| HostError::state(error.to_string()))
     }
 
     /// Rewrites a launch so the agent reads its prompt from stdin.
@@ -312,7 +352,7 @@ impl ServerActor {
         .map_err(|error| HostError::state(error.to_string()))?
         .map_err(|error| HostError::state(error.to_string()))?;
         if let Ok(Some(tab)) = self.runtime_store.find_workspace_tab(&tab_id).await {
-            if let Some(profile_id) = tab.payload.get("agentProfileId").and_then(Value::as_str) {
+            if let Some(profile_id) = agent_profile_id(&tab) {
                 launch
                     .environment
                     .insert("ALERA_AGENT_PROFILE_ID".to_string(), profile_id.to_string());
