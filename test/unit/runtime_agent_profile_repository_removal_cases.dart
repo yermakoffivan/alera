@@ -1,6 +1,18 @@
 part of 'runtime_agent_profile_repository_test.dart';
 
 void _registerAgentProfileRemovalRepositoryTests() {
+  test('removal impact defaults absent owner collections to empty', () {
+    final impact = AgentProfileRemovalImpact.fromJson(<String, Object?>{
+      'profileId': 'prof_1',
+      'exists': true,
+    });
+
+    expect(impact.automationIds, isEmpty);
+    expect(impact.executionPolicyRunIds, isEmpty);
+    expect(impact.tabs, isEmpty);
+    expect(impact.hasBlockingReferences, isFalse);
+  });
+
   test('removal impact parses safe owner identities', () async {
     final client = _FakeRuntimeHostClient();
     client.responses['status.get'] = <String, Object?>{

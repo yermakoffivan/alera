@@ -151,7 +151,10 @@ async fn active_execution_policy_reference_exposes_only_run_id_and_blocks_remova
         .agent_profile_removal_impact("prof_a", 0)
         .await
         .unwrap();
-    assert_eq!(impact.execution_policy_run_ids, [run.id.clone()]);
+    assert_eq!(
+        impact.execution_policy_run_ids,
+        std::slice::from_ref(&run.id)
+    );
     let encoded = serde_json::to_string(&impact).unwrap();
     assert!(!encoded.contains("Sensitive run spec"));
     assert!(store.remove_agent_profile("prof_a", 0).await.is_err());
