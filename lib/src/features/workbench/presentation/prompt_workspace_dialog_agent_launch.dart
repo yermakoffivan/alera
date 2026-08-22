@@ -8,7 +8,7 @@ extension _PromptWorkspaceDialogAgentLaunch on _PromptWorkspaceDialogState {
     if (creation == null || profile == null || prompt.isEmpty) {
       return;
     }
-    setState(() {
+    _update(() {
       _working = true;
       _phase = 'Starting agent';
       _error = null;
@@ -41,7 +41,7 @@ extension _PromptWorkspaceDialogAgentLaunch on _PromptWorkspaceDialogState {
       }
     } catch (error) {
       if (mounted) {
-        setState(() {
+        _update(() {
           _working = false;
           _phase = null;
           _error = error.toString();
