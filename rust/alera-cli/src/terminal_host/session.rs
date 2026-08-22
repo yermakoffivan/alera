@@ -432,7 +432,9 @@ impl Session {
         // killed: a dead root's children reparent away and stop being findable.
         let shell = self.shell.take();
         #[cfg(windows)]
-        self.shell = None;
+        {
+            self.shell = None;
+        }
         #[cfg(windows)]
         {
             // KILL_ON_JOB_CLOSE terminates the shell and every associated
