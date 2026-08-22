@@ -1077,20 +1077,6 @@ impl RuntimeStore {
         self.upsert_workspace_tab(tab).await
     }
 
-    pub async fn remove_workspace_tab(&self, tab_id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM workspaceTabs WHERE id = ?")
-            .bind(tab_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM agentProfileLaunchReceipts WHERE tabId = ?")
-            .bind(tab_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     pub async fn find_linked_review(&self, workspace_id: &str) -> Result<Option<LinkedReview>> {
         let row = sqlx::query(
             "SELECT workspaceId, dismissed, provider, number, url, linkedAt \

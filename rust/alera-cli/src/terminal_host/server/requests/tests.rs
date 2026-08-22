@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal_host::agent_profile_capabilities::RUNTIME_HOST_AGENT_PROFILE_LAUNCH_IDEMPOTENCY_CAPABILITY;
 use crate::terminal_host::server::mobile_gateway_surface::mobile_request_allowed;
 
 // Only the hello-capabilities test needs this one, and importing it in the
